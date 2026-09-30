@@ -25,4 +25,4 @@ jobs:
       - run: npm run test:browser
         if: matrix.python-version == '3.12'
       - run: python -m compileall -q .
-      - run: ruff check --select E9,F63,F7,F82 archive_management.py db_config.py serializer.py forward_archive.py main.py web/server.py tests
+      - run: ruff check --select E9,F63,F7,F82 archive_management.py db_config.py serializer.py forward_archive.py main.py web/server.py contrib/archive_migrate.py tests

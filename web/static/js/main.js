@@ -1241,6 +1241,19 @@ function formatMsg(text, depth = 0) {
         }
     }
 
+    // QQ's advanced Markdown command tags are display labels in the archive.
+    // Restore them only after Markdown/CQ rendering so decoded text stays inert.
+    const commandLabels = [];
+    text = safeText(text).replace(/<qqbot-cmd-input\b[^>]*\/>/gi, tag => {
+        const show = tag.match(/\s+show\s*=\s*(["'])(.*?)\1/i);
+        if (!show) return tag;
+        let label = show[2];
+        try { label = decodeURIComponent(label); } catch (_) { /* Preserve malformed encoding. */ }
+        const index = commandLabels.length;
+        commandLabels.push(escapeHtmlText(label));
+        return makePrivateToken('QQCOMMAND', index);
+    });
+
     const forwardCards = [];
     const makeForwardPlaceholder = (forwardId, rest) => {
         const index = forwardCards.length;
@@ -1385,7 +1398,11 @@ function formatMsg(text, depth = 0) {
         escaped = escaped.split(makePrivateToken('FORWARD', index)).join(html);
     });
 
-    return markdown.restore(escaped);
+    let rendered = markdown.restore(escaped);
+    commandLabels.forEach((label, index) => {
+        rendered = rendered.split(makePrivateToken('QQCOMMAND', index)).join(label);
+    });
+    return rendered;
 }
 
 function settleLoadedImages(container) {

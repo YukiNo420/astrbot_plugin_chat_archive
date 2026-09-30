@@ -394,7 +394,10 @@ def verify_bundle(bundle, timeout=300):
     if not isinstance(name, str) or Path(name).name != name or name in {".", ".."}:
         raise MigrationError("Invalid database filename in manifest")
     with closing(
-        sqlite3.connect((root / "data" / name).as_uri() + "?mode=ro", uri=True)
+        # Normalized, unused bundles are main-file-only; never create SQLite sidecars here.
+        sqlite3.connect(
+            (root / "data" / name).as_uri() + "?mode=ro&immutable=1", uri=True
+        )
     ) as db:
         if _logical_database(db, deadline) != manifest["database"]:
             raise MigrationError("Database validation failed")

@@ -321,7 +321,7 @@ def serialize_message_chain(chain) -> str:
                 else:
                     parts.append("[CQ:image]")
             elif cls_name == "Video":
-                url = getattr(comp, "file", "") or getattr(comp, "url", "")
+                url = getattr(comp, "url", "") or getattr(comp, "file", "")
                 if url:
                     url = escape_cq_param(url)
                     parts.append(f"[CQ:video,url={url}]")

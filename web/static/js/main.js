@@ -6,6 +6,8 @@ let nextCursor = 0;
 let activeSessionId = '';
 let activeUserId = '';
 let isHistoryLoading = false;
+let historyRequestSeq = 0;
+let dashboardRequestSeq = 0;
 const avatarPreloadCache = new Map();
 const avatarResolvedCache = new Map();
 
@@ -723,6 +725,7 @@ function renderDashboard(data) {
 }
 
 async function fetchDashboard(range = '30d') {
+    const requestSeq = ++dashboardRequestSeq;
     try {
         const trendWrapper = document.getElementById('dashboardTrendWrapper');
         const rangeGroup = document.getElementById('dashboardRangeGroup');
@@ -733,6 +736,7 @@ async function fetchDashboard(range = '30d') {
         }
 
         const data = await fetchAPI(`/api/dashboard?range=${encodeURIComponent(range)}&recent_limit=12`);
+        if (requestSeq !== dashboardRequestSeq || activeSessionId || document.getElementById('searchInput')?.value.trim()) return;
         if (!data.success) return;
 
         if (isAlreadyVisible) {
@@ -762,6 +766,7 @@ async function fetchDashboard(range = '30d') {
             renderDashboard(data.data);
         }
     } catch (e) {
+        if (requestSeq !== dashboardRequestSeq || activeSessionId || document.getElementById('searchInput')?.value.trim()) return;
         console.error(e);
         const list = document.getElementById('messageList');
         if (list && !document.getElementById('dashboardTrendWrapper')) {
@@ -824,6 +829,8 @@ function updateActiveSessionHeader() {
 }
 
 function showDashboard(options = {}) {
+    historyRequestSeq += 1;
+    dashboardRequestSeq += 1;
     const searchInput = document.getElementById('searchInput');
     if (searchInput) searchInput.value = '';
     activeSessionId = '';
@@ -1556,6 +1563,25 @@ function createMessageBubble(msg) {
     id.textContent = `#${safeText(msg.msg_id, 'N/A') || 'N/A'}`;
     footer.appendChild(id);
 
+    const sid = safeText(msg.session_id) || 'legacy:archive';
+    if (!activeSessionId) {
+        const origin = document.createElement('a');
+        const url = new URL(window.location.href);
+        url.searchParams.set('session_id', sid);
+        origin.href = url.pathname + url.search;
+        origin.className = 'message-origin';
+        origin.textContent = `来源：${safeText(msg.session_name) || sid}`;
+        origin.title = sid;
+        footer.appendChild(origin);
+    }
+    const manage = document.createElement('button');
+    manage.type = 'button';
+    manage.className = 'message-manage';
+    manage.textContent = '管理';
+    manage.title = '查看存储和可恢复删除';
+    manage.addEventListener('click', () => openMessageManagement(sid, Number(msg.id)));
+    footer.appendChild(manage);
+
     if (isRecalled) {
         const recalled = document.createElement('span');
         recalled.className = 'msg-tag';
@@ -1947,7 +1973,7 @@ function renderSessionList(sessions) {
     });
 }
 
-async function fetchSessions() {
+async function fetchSessions(options = {}) {
     try {
         const data = await fetchAPI('/api/sessions');
         if (data.success) {
@@ -1955,16 +1981,20 @@ async function fetchSessions() {
             renderPlatformFilter(rawSessions);
             renderSessionList(rawSessions);
 
+            if (options.selectView === false) return;
+            const navigationUrl = window.location.href;
+            const canSelect = () => window.location.href === navigationUrl && !activeSessionId && !document.getElementById('searchInput').value.trim();
+
             const desiredSessionId = getDesiredSessionId();
             if (desiredSessionId) {
                 const targetSession = data.data.find(s => s.session_id === desiredSessionId);
                 if (targetSession) {
-                    setTimeout(() => selectSession(targetSession.session_id, targetSession.name, targetSession.message_type, { replaceUrl: true }), 100);
+                    setTimeout(() => { if (canSelect()) selectSession(targetSession.session_id, targetSession.name, targetSession.message_type, { replaceUrl: true }); }, 100);
                 } else {
-                    setTimeout(() => selectSession(desiredSessionId, desiredSessionId, '', { replaceUrl: true }), 100);
+                    setTimeout(() => { if (canSelect()) selectSession(desiredSessionId, desiredSessionId, '', { replaceUrl: true }); }, 100);
                 }
             } else {
-                setTimeout(() => showDashboard({ replaceUrl: true }), 100);
+                setTimeout(() => { if (canSelect()) showDashboard({ replaceUrl: true }); }, 100);
             }
         }
     } catch (e) { console.error(e); }
@@ -1983,6 +2013,7 @@ async function selectSession(sessionId, name, msgType, options = {}) {
         closeAllPanels();
     }
     activeMsgType = msgType || '';
+    dashboardRequestSeq += 1;
     activeSessionId = sessionId;
     updateSessionUrl(sessionId, options.replaceUrl === true);
     memberRequestSeq += 1;
@@ -2511,7 +2542,12 @@ const listObserver = new ResizeObserver(entries => {
 async function fetchHistory(append = false) {
     const keyword = document.getElementById('searchInput').value.trim();
     if (!activeSessionId && !keyword) return;
-    if (isHistoryLoading) return;
+    if (append && isHistoryLoading) return;
+    const requestSeq = ++historyRequestSeq;
+    const requestedSession = activeSessionId;
+    const requestedUser = activeUserId;
+    const requestedStart = filterStart;
+    const requestedEnd = filterEnd;
     isHistoryLoading = true;
 
     updateActiveSessionHeader();
@@ -2556,6 +2592,7 @@ async function fetchHistory(append = false) {
         if (filterEnd) url += `&time_end=${filterEnd}`;
 
         const data = await fetchAPI(url);
+        if (requestSeq !== historyRequestSeq || requestedSession !== activeSessionId || requestedUser !== activeUserId || keyword !== document.getElementById('searchInput').value.trim() || requestedStart !== filterStart || requestedEnd !== filterEnd) return;
 
         if (data.success) {
             if (data.next_cursor !== undefined) nextCursor = data.next_cursor;
@@ -2722,13 +2759,15 @@ async function fetchHistory(append = false) {
                 // 立即滚动
                 scrollListToBottom(list);
                 // 延时一丁点时间再试一次，确保渲染首帧完成
-                setTimeout(() => scrollListToBottom(list), 50);
+                setTimeout(() => { if (requestSeq === historyRequestSeq) scrollListToBottom(list); }, 50);
             }
         }
     } catch (e) { console.error(e); }
     finally {
-        isHistoryLoading = false;
-        if (loadMoreBtn) loadMoreBtn.disabled = false;
+        if (requestSeq === historyRequestSeq) {
+            isHistoryLoading = false;
+            if (loadMoreBtn) loadMoreBtn.disabled = false;
+        }
     }
 }
 
@@ -2743,6 +2782,7 @@ async function fetchStats() {
 }
 
 function handleSearch() {
+    dashboardRequestSeq += 1;
     const keyword = document.getElementById('searchInput').value.trim();
     if (!activeSessionId && !keyword) {
         showDashboard();
@@ -2895,6 +2935,17 @@ window.addEventListener('popstate', () => {
 
 document.addEventListener('DOMContentLoaded', () => {
     initApp();
+    document.getElementById('home-btn')?.addEventListener('click', () => showDashboard());
+    document.getElementById('manage-btn')?.addEventListener('click', () => {
+        if (activeSessionId) openMessageManagement(activeSessionId);
+        else window.alert('请先选择要管理的会话');
+    });
+    document.getElementById('manage-close')?.addEventListener('click', () => document.getElementById('manage-dialog').close());
+    document.getElementById('manage-preview')?.addEventListener('click', previewMessageManagement);
+    document.getElementById('manage-confirm')?.addEventListener('click', confirmMessageManagement);
+    document.getElementById('manage-before')?.addEventListener('input', clearManagementPreview);
+    document.getElementById('manage-mode')?.addEventListener('change', clearManagementPreview);
+    document.getElementById('manage-export')?.addEventListener('click', exportManagementPreview);
 
     const loginBtn = document.getElementById('login-btn');
     const logoutBtn = document.getElementById('logout-btn');
@@ -2955,3 +3006,135 @@ document.addEventListener('DOMContentLoaded', () => {
         overlay.addEventListener('click', closeAllPanels);
     }
 });
+
+let managementScope = null;
+let managementPreview = null;
+let managementBusy = false;
+
+function setManagementBusy(busy) {
+    managementBusy = busy;
+    document.getElementById('manage-mode').disabled = busy;
+    document.getElementById('manage-before').disabled = busy || (managementScope?.message_id || 0) > 0;
+    document.getElementById('manage-preview').disabled = busy;
+    document.getElementById('manage-confirm').disabled = busy || !managementPreview;
+    document.getElementById('manage-export').disabled = busy || !managementPreview;
+}
+
+function clearManagementPreview() {
+    managementPreview = null;
+    document.getElementById('manage-confirm').disabled = true;
+    document.getElementById('manage-export').disabled = true;
+}
+
+async function managementRequest(path, body = null) {
+    const response = await fetch(path, { method: body ? 'POST' : 'GET', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', ...(API_KEY ? { 'X-API-Key': API_KEY } : {}) },
+        ...(body ? { body: JSON.stringify(body) } : {}) });
+    const data = await response.json();
+    if (!response.ok) {
+        if (response.status === 401) showAuth(true);
+        throw new Error(typeof data.detail === 'string' ? data.detail : '管理请求失败，请重新预览');
+    }
+    return data;
+}
+
+async function openMessageManagement(sessionId, messageId = 0) {
+    if (managementBusy) return;
+    managementScope = { session_id: sessionId, message_id: messageId };
+    clearManagementPreview();
+    document.getElementById('manage-before').value = '';
+    document.getElementById('manage-mode').value = 'trash';
+    document.getElementById('manage-before').disabled = messageId > 0;
+    document.getElementById('manage-session').textContent = sessionId + (messageId ? ` · 归档记录 #${messageId}` : '');
+    document.getElementById('manage-status').textContent = '预览后才能确认；每批最多 500 条。';
+    document.getElementById('manage-trash').replaceChildren();
+    const dialog = document.getElementById('manage-dialog');
+    if (!dialog.open) dialog.showModal();
+    await loadManagementTrash(sessionId);
+}
+
+async function loadManagementTrash(sessionId) {
+    try {
+        const [data, storage] = await Promise.all([
+            managementRequest(`/api/manage/trash?session_id=${encodeURIComponent(sessionId)}`),
+            managementRequest(`/api/manage/storage?session_id=${encodeURIComponent(sessionId)}`),
+        ]);
+        if (managementScope?.session_id !== sessionId) return;
+        const root = document.getElementById('manage-trash');
+        root.replaceChildren();
+        const summary = document.createElement('p');
+        summary.textContent = `当前会话 ${storage.active.count} 条，消息正文 ${storage.active.message_utf8_bytes} 字节；回收站 ${storage.trash.count} 条，载荷 ${storage.trash.payload_bytes} 字节。SQLite 全库已分配页面 ${storage.database_allocated_bytes} 字节，其中 ${storage.database_free_page_bytes} 字节空闲页可重用，不等于已回收磁盘空间。`;
+        root.appendChild(summary);
+        for (const operation of data.operations) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = `恢复 ${operation.count} 条 · ${formatTime(operation.created_at)}`;
+            button.addEventListener('click', async () => {
+                if (managementBusy || !window.confirm(`恢复此会话的 ${operation.count} 条消息？`)) return;
+                setManagementBusy(true);
+                try {
+                    await managementRequest('/api/manage/restore', { session_id: sessionId, operation_id: operation.operation_id });
+                    clearManagementPreview();
+                    document.getElementById('manage-status').textContent = '恢复成功。';
+                    await refreshAfterManagement(sessionId);
+                } catch (error) { document.getElementById('manage-status').textContent = error.message; }
+                finally { setManagementBusy(false); }
+            });
+            root.appendChild(button);
+        }
+    } catch (error) { document.getElementById('manage-status').textContent = error.message; }
+}
+
+async function refreshAfterManagement(sessionId) {
+    await fetchSessions({ selectView: false });
+    if (activeSessionId) { currentPage = 1; await fetchHistory(); reloadStats(); }
+    else showDashboard();
+    await loadManagementTrash(sessionId);
+}
+
+async function previewMessageManagement() {
+    if (managementBusy || !managementScope) return;
+    setManagementBusy(true);
+    clearManagementPreview();
+    try {
+        const raw = document.getElementById('manage-before').value;
+        const beforeTs = raw ? Math.floor(new Date(raw).getTime() / 1000) : 0;
+        if (raw && !Number.isFinite(beforeTs)) throw new Error('截止时间无效');
+        managementPreview = await managementRequest('/api/manage/preview', { ...managementScope, before_ts: beforeTs });
+        document.getElementById('manage-status').textContent = `本批 ${managementPreview.count} 条（匹配 ${managementPreview.matched_count} 条），正文 ${managementPreview.message_utf8_bytes} 字节，引用缓存 ${managementPreview.cached_attachment_bytes} 字节，其中 ${managementPreview.shared_attachment_count} 个共享附件。附件全部保留。预览 5 分钟内有效。`;
+        document.getElementById('manage-confirm').disabled = false;
+        document.getElementById('manage-export').disabled = false;
+    } catch (error) { document.getElementById('manage-status').textContent = error.message; }
+    finally { setManagementBusy(false); }
+}
+
+async function confirmMessageManagement() {
+    if (managementBusy || !managementPreview) return;
+    const mode = document.getElementById('manage-mode').value;
+    if (!window.confirm(`处理会话 ${managementPreview.session_id} 的 ${managementPreview.count} 条预览消息？附件保留。`)) return;
+    const permanent = mode === 'permanent' ? window.prompt('永久删除无法从回收站恢复。可先取消并导出 JSON 备份；确认时请输入：永久删除') : '';
+    if (mode === 'permanent' && permanent !== '永久删除') return;
+    setManagementBusy(true);
+    const preview = managementPreview;
+    clearManagementPreview();
+    try {
+        await managementRequest('/api/manage/delete', { preview_token: preview.preview_token, confirm_session_id: preview.session_id, delete_mode: mode, confirm_permanent: permanent });
+        document.getElementById('manage-status').textContent = mode === 'permanent' ? '本批消息已永久删除；附件保留。' : '已移入回收站，可在下方恢复。';
+        await refreshAfterManagement(preview.session_id);
+    } catch (error) { document.getElementById('manage-status').textContent = error.message; }
+    finally { setManagementBusy(false); }
+}
+
+async function exportManagementPreview() {
+    if (managementBusy || !managementPreview) return;
+    setManagementBusy(true);
+    try {
+        const data = await managementRequest('/api/manage/export', { preview_token: managementPreview.preview_token });
+        const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url; link.download = 'chat-archive-messages.json'; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        document.getElementById('manage-status').textContent = '已开始下载 JSON；请确认备份已保存。备份不包含附件，原预览仍有效。';
+    } catch (error) { document.getElementById('manage-status').textContent = error.message; }
+    finally { setManagementBusy(false); }
+}

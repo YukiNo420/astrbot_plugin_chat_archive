@@ -18,5 +18,11 @@ jobs:
       - run: python -m unittest discover -s tests -v
       - run: node tests/forward_render.test.cjs
       - run: node --check web/static/js/main.js
+      - run: npm ci
+        if: matrix.python-version == '3.12'
+      - run: npx playwright install --with-deps chromium
+        if: matrix.python-version == '3.12'
+      - run: npm run test:browser
+        if: matrix.python-version == '3.12'
       - run: python -m compileall -q .
-      - run: ruff check --select E9,F63,F7,F82 serializer.py forward_archive.py main.py tests
+      - run: ruff check --select E9,F63,F7,F82 archive_management.py db_config.py serializer.py forward_archive.py main.py web/server.py tests

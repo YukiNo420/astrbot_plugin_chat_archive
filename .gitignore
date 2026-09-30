@@ -20,3 +20,6 @@ web/static/cache/
 .DS_Store
 ._*
 Thumbs.db
+
+# Browser test dependencies and generated synthetic evidence
+node_modules/

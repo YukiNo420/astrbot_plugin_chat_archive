@@ -2552,3 +2552,16 @@ body {
     fill: currentColor;
     display: block;
 }
+/* Recoverable message management. */
+.compact-control { width: auto; padding: .45rem .6rem; font-size: .75rem; }
+.message-manage { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: .7rem; }
+.message-origin { color: var(--text-sub); max-width: 16rem; overflow: hidden; text-overflow: ellipsis; }
+.management-dialog { max-width: min(36rem, 92vw); max-height: 85vh; overflow: auto; border: 1px solid var(--glass-border); border-radius: 1rem; padding: 1.3rem; background: #101827; color: var(--text-main); }
+.management-dialog::backdrop { background: rgba(0,0,0,.7); }
+.management-dialog p { font-size: .85rem; line-height: 1.6; margin: .8rem 0; }
+.management-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.management-session { overflow-wrap: anywhere; }
+.management-dialog input { display: block; margin: .7rem 0; padding: .5rem; }
+.management-dialog button { cursor: pointer; margin: .3rem 0; }
+.management-dialog button:disabled { opacity: .4; cursor: default; }
+#manage-trash button { display: block; padding: .5rem; }

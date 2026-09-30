@@ -39,6 +39,12 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
         )
         cls.env.start()
         cls.db = importlib.import_module("db_config")
+        cls.db_path_patch = patch.object(
+            cls.db, "DB_PATH", str(cls.data / "nested" / "synthetic.db")
+        )
+        cls.pool_patch = patch.object(cls.db, "_POOL", None)
+        cls.db_path_patch.start()
+        cls.pool_patch.start()
         cls.server = importlib.import_module("web.server")
         cls.media = importlib.import_module("media_cache")
         cls.db.init_db()
@@ -50,6 +56,8 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def tearDownClass(cls):
         cls.db.get_connection_pool().close_all()
+        cls.pool_patch.stop()
+        cls.db_path_patch.stop()
         cls.env.stop()
         cls.tmp.cleanup()
 
@@ -192,6 +200,143 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
             response = await client.get("/")
             self.assertEqual(response.status_code, 200)
             self.assertIn("main.js", response.text)
+
+    async def test_management_auth_origin_preview_delete_restore(self):
+        with self.db.get_db_connection() as db:
+            db.execute(
+                "INSERT INTO chat_history (session_id,message,timestamp) VALUES ('synthetic:manage','synthetic only',100)"
+            )
+            db.commit()
+        body = {"session_id": "synthetic:manage"}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=self.server.app),
+            base_url="http://synthetic",
+        ) as client:
+            self.assertEqual(
+                (await client.post("/api/manage/preview", json=body)).status_code, 401
+            )
+            await client.post(
+                "/api/auth/verify", json={"api_key": "synthetic-test-only"}
+            )
+            self.assertEqual(
+                (
+                    await client.post(
+                        "/api/manage/preview",
+                        json=body,
+                        headers={"Origin": "https://evil.example"},
+                    )
+                ).status_code,
+                403,
+            )
+            preview = (await client.post("/api/manage/preview", json=body)).json()
+            self.server._DASHBOARD_CACHE["fixture"] = (0, {})
+            result = await client.post(
+                "/api/manage/delete",
+                json={
+                    "preview_token": preview["preview_token"],
+                    "confirm_session_id": body["session_id"],
+                },
+            )
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(self.server._DASHBOARD_CACHE, {})
+            self.assertEqual(
+                (await client.get("/api/history", params=body)).json()["data"], []
+            )
+            restored = await client.post(
+                "/api/manage/restore",
+                json={"operation_id": result.json()["operation_id"], **body},
+            )
+            self.assertEqual(restored.status_code, 200)
+            self.assertEqual(
+                len((await client.get("/api/history", params=body)).json()["data"]), 1
+            )
+
+    async def test_management_all_routes_require_auth_and_preview_is_cookie_bound(self):
+        body = {"session_id": "synthetic:cookie-bound"}
+        with self.db.get_db_connection() as db:
+            db.execute(
+                "INSERT INTO chat_history (session_id,message,timestamp) VALUES (?, 'synthetic only',100)",
+                [body["session_id"]],
+            )
+            db.commit()
+        transport = httpx.ASGITransport(app=self.server.app)
+        async with (
+            httpx.AsyncClient(
+                transport=transport, base_url="http://synthetic"
+            ) as first,
+            httpx.AsyncClient(
+                transport=transport, base_url="http://synthetic"
+            ) as second,
+        ):
+            for path in ("preview", "delete", "restore", "export"):
+                self.assertEqual(
+                    (await first.post("/api/manage/" + path, json={})).status_code, 401
+                )
+            for path in ("trash", "storage"):
+                self.assertEqual(
+                    (await first.get("/api/manage/" + path, params=body)).status_code,
+                    401,
+                )
+            await first.post(
+                "/api/auth/verify", json={"api_key": "synthetic-test-only"}
+            )
+            await second.post(
+                "/api/auth/verify", json={"api_key": "synthetic-test-only"}
+            )
+            headers = {"X-API-Key": "wrong-synthetic-key"}
+            preview = (
+                await first.post("/api/manage/preview", json=body, headers=headers)
+            ).json()
+            payload = {
+                "preview_token": preview["preview_token"],
+                "confirm_session_id": body["session_id"],
+            }
+            self.assertEqual(
+                (
+                    await second.post(
+                        "/api/manage/delete", json=payload, headers=headers
+                    )
+                ).status_code,
+                409,
+            )
+            exported = await first.post(
+                "/api/manage/export",
+                json={"preview_token": preview["preview_token"]},
+                headers=headers,
+            )
+            self.assertEqual(exported.status_code, 200)
+            self.assertIn("attachment;", exported.headers["content-disposition"])
+            self.assertEqual(
+                exported.json()["messages"][0]["session_id"], body["session_id"]
+            )
+            self.assertEqual(
+                (
+                    await first.post(
+                        "/api/manage/delete",
+                        json={**payload, "delete_mode": "permanent"},
+                    )
+                ).status_code,
+                400,
+            )
+            self.assertEqual(
+                (
+                    await first.post(
+                        "/api/manage/delete",
+                        json={**payload, "confirm_session_id": "synthetic:other"},
+                    )
+                ).status_code,
+                400,
+            )
+            await first.post("/api/auth/logout")
+            self.assertEqual(
+                (await first.post("/api/manage/delete", json=payload)).status_code, 401
+            )
+            await first.post(
+                "/api/auth/verify", json={"api_key": "synthetic-test-only"}
+            )
+            self.assertEqual(
+                (await first.post("/api/manage/delete", json=payload)).status_code, 409
+            )
 
     async def test_real_loopback_start_stop_restart(self):
         with socket.socket() as sock:

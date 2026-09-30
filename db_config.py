@@ -27,6 +27,10 @@ except ImportError:
 
 DATA_DIR = get_data_dir()
 
+
+def _session_predicate(session_id):
+    return "COALESCE(NULLIF(session_id, ''), 'legacy:archive') = ?" if session_id == "legacy:archive" else "session_id = ?"
+
 DEFAULT_DB_PATH = str(DATA_DIR / "chat_history.db")
 
 # logger is imported from astrbot.api to meet framework standards
@@ -285,7 +289,7 @@ class DatabaseManager:
                     query += " AND user_id = ?"
                     params.append(str(user_id))
                 if session_id:
-                    query += " AND session_id = ?"
+                    query += " AND " + _session_predicate(session_id)
                     params.append(str(session_id))
                 if keyword:
                     query += " AND message LIKE ? ESCAPE '\\'"
@@ -350,7 +354,7 @@ class DatabaseManager:
             with get_db_connection() as conn:
                 query = (
                     "SELECT user_id, sender_name, COUNT(*) as count "
-                    "FROM chat_history WHERE session_id = ? "
+                    f"FROM chat_history WHERE {_session_predicate(session_id)} "
                     "AND user_id IS NOT NULL AND user_id != '' AND user_id != '0' "
                     "AND (is_recalled IS NULL OR is_recalled = 0)"
                 )
@@ -386,7 +390,7 @@ class DatabaseManager:
                 where = "WHERE user_id = ?"
                 params: list = [str(user_id)]
                 if session_id:
-                    where += " AND session_id = ?"
+                    where += " AND " + _session_predicate(session_id)
                     params.append(str(session_id))
 
                 cursor = conn.execute(
@@ -432,7 +436,7 @@ class DatabaseManager:
                     query += " AND user_id = ?"
                     params.append(str(user_id))
                 if session_id:
-                    query += " AND session_id = ?"
+                    query += " AND " + _session_predicate(session_id)
                     params.append(str(session_id))
                 if since_ts is not None:
                     query += " AND timestamp >= ?"
@@ -868,6 +872,11 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS idx_guild_avatar ON chat_history(guild_avatar_url);")
         ensure_media_flags(db)
         ensure_session_stats(db)
+        try:
+            from .archive_management import ensure_management_schema
+        except ImportError:
+            from archive_management import ensure_management_schema
+        ensure_management_schema(db)
 
         # Migrate old Telegram channel messages to ChannelMessage type (idempotent)
         try:

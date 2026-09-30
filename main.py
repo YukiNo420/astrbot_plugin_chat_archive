@@ -858,6 +858,23 @@ class ChatArchivePlugin(Star):
                 enable_clean = basic_conf.get("enable_clean", False)
                 clean_days = basic_conf.get("clean_days", 30)
 
+                try:
+                    from .archive_management import ArchiveManager
+                    manager = ArchiveManager(get_db_connection, STATIC_CACHE_DIR)
+                    retained = await asyncio.to_thread(
+                        manager.apply_retention,
+                        basic_conf.get("message_retention_days", 0),
+                        basic_conf.get("message_retention_sessions", []),
+                        global_scope=basic_conf.get("message_retention_global", False),
+                        excluded_session_ids=basic_conf.get("message_retention_excluded_sessions", []),
+                        should_stop=lambda: self._shutting_down,
+                    )
+                    if retained and self.web_server:
+                        from .web.server import invalidate_statistics
+                        invalidate_statistics()
+                except Exception as exc:
+                    logger.error(f"Chat Archive: recoverable retention failed: {exc}")
+
                 if enable_clean and clean_days > 0:
                     await self._clean_expired_cache(clean_days)
             except Exception as e:

@@ -9,6 +9,7 @@ import time
 import threading
 import ipaddress
 import socket
+import hashlib
 from contextlib import suppress
 from functools import lru_cache
 from urllib.parse import urlparse
@@ -22,6 +23,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
+from pydantic import BaseModel, Field
+
+try:
+    from ..archive_management import ArchiveManager, ManagementConflict
+except ImportError:
+    import sys
+    sys.path.append(str(Path(__file__).resolve().parent.parent))
+    from archive_management import ArchiveManager, ManagementConflict
 
 try:
     from ..db_config import get_db_connection, init_db
@@ -234,6 +243,9 @@ async def auth_middleware(request: Request, call_next):
             status_code=401,
             content={"error": "Unauthorized", "message": "Invalid API Key"},
         )
+    request.state.archive_principal = hashlib.sha256(
+        ("header:" + header_key if header_key and secrets.compare_digest(header_key, API_KEY) else "cookie:" + cookie_token).encode()
+    ).hexdigest()
     return await call_next(request)
 
 # Cache media is mounted separately and remains protected by auth middleware.
@@ -245,6 +257,96 @@ _DASHBOARD_CACHE: dict[str, tuple[float, dict]] = {}
 _DASHBOARD_CACHE_LOCK = threading.Lock()
 _STATS_CACHE: dict[str, tuple[float, dict]] = {}
 _STATS_CACHE_LOCK = threading.Lock()
+
+_ARCHIVE_MANAGER = ArchiveManager(get_db_connection, cache_static_dir)
+
+
+class ManagementPreview(BaseModel):
+    session_id: str = Field(min_length=1, max_length=256)
+    message_id: int = Field(default=0, ge=0)
+    before_ts: int = Field(default=0, ge=0)
+
+
+class ManagementDelete(BaseModel):
+    preview_token: str = Field(min_length=1, max_length=128)
+    confirm_session_id: str = Field(min_length=1, max_length=256)
+    delete_mode: str = Field(default="trash", max_length=16)
+    confirm_permanent: str = Field(default="", max_length=16)
+
+
+class ManagementExport(BaseModel):
+    preview_token: str = Field(min_length=1, max_length=128)
+
+
+class ManagementRestore(BaseModel):
+    operation_id: str = Field(min_length=1, max_length=128)
+    session_id: str = Field(min_length=1, max_length=256)
+
+
+def _management_principal(request):
+    origin = request.headers.get("origin")
+    if origin and origin != str(request.base_url).rstrip("/"):
+        raise HTTPException(403, "不允许跨站管理操作")
+    return request.state.archive_principal
+
+
+def _management_call(function, *args, **kwargs):
+    try:
+        return function(*args, **kwargs)
+    except ManagementConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.error(f"Chat Archive management transaction failed: {exc}")
+        raise HTTPException(503, "数据库操作失败；未确认成功，请查看日志") from exc
+
+
+def _management_body(body):
+    return body.model_dump() if hasattr(body, "model_dump") else body.dict()
+
+
+def invalidate_statistics():
+    with _DASHBOARD_CACHE_LOCK:
+        _DASHBOARD_CACHE.clear()
+    with _STATS_CACHE_LOCK:
+        _STATS_CACHE.clear()
+
+
+@app.post("/api/manage/preview")
+def management_preview(body: ManagementPreview, request: Request):
+    return _management_call(_ARCHIVE_MANAGER.preview, _management_principal(request), **_management_body(body))
+
+
+@app.post("/api/manage/delete")
+def management_delete(body: ManagementDelete, request: Request):
+    result = _management_call(_ARCHIVE_MANAGER.delete, _management_principal(request), **_management_body(body))
+    invalidate_statistics()
+    return result
+
+
+@app.post("/api/manage/export")
+def management_export(body: ManagementExport, request: Request):
+    result = _management_call(_ARCHIVE_MANAGER.export, _management_principal(request), body.preview_token)
+    return JSONResponse(content=result, headers={"Content-Disposition": "attachment; filename=chat-archive-messages.json"})
+
+
+@app.post("/api/manage/restore")
+def management_restore(body: ManagementRestore, request: Request):
+    _management_principal(request)
+    result = _management_call(_ARCHIVE_MANAGER.restore, **_management_body(body))
+    invalidate_statistics()
+    return result
+
+
+@app.get("/api/manage/trash")
+def management_trash(session_id: str = Query(min_length=1, max_length=256)):
+    return {"operations": _management_call(_ARCHIVE_MANAGER.trash, session_id)}
+
+
+@app.get("/api/manage/storage")
+def management_storage(session_id: str = Query(min_length=1, max_length=256)):
+    return _management_call(_ARCHIVE_MANAGER.storage, session_id)
 
 
 def _load_dashboard_cache_ttl() -> int:

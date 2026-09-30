@@ -9,7 +9,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/main.css?v=20260529-markdown">
+    <link rel="stylesheet" href="/static/css/main.css?v=20260930-management">
     <link rel="icon" href="/static/logo.png" type="image/png">
 </head>
 
@@ -62,6 +62,8 @@
             
             <div id="activeSessionId" style="font-size: 0.8rem; color: var(--text-muted); padding: 0.15rem 0 0.3rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;">尚未选择</div>
             <div style="display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+                <button class="primary-btn compact-control" id="home-btn" type="button">总览</button>
+                <button class="primary-btn compact-control" id="manage-btn" type="button">消息管理</button>
                 <div class="mobile-controls" style="display: none; flex-shrink: 0;">
                     <div id="btn-sidebar" class="mobile-btn">☰ 会话</div>
                     <div id="btn-analysis" class="mobile-btn">📊 分析</div>
@@ -130,7 +132,19 @@
         </div>
     </div>
 
-    <script src="/static/js/main.js?v=20260930-media-urls"></script>
+    <dialog id="manage-dialog" class="management-dialog">
+        <div class="management-heading"><h2>消息管理</h2><button id="manage-close" type="button">关闭</button></div>
+        <p id="manage-session" class="management-session"></p>
+        <p>默认移入可恢复的回收站。可选永久删除消息，需二次确认，且不能从回收站恢复。可先导出 JSON 备份；备份不含附件，也不提供自动导入。缓存附件保留，SQLite 文件不会立即缩小。</p>
+        <label>仅处理此时间之前的消息（留空表示当前会话）<input type="datetime-local" id="manage-before"></label>
+        <label>删除方式 <select id="manage-mode"><option value="trash">移入回收站（可恢复）</option><option value="permanent">永久删除消息（不可恢复）</option></select></label>
+        <button class="primary-btn" id="manage-preview" type="button">预览存储与删除范围</button>
+        <button class="primary-btn" id="manage-export" type="button" disabled>导出本批消息 JSON 备份</button>
+        <p id="manage-status" role="status"></p>
+        <button class="primary-btn" id="manage-confirm" type="button" disabled>确认处理预览消息</button>
+        <h3>回收站</h3><div id="manage-trash"></div>
+    </dialog>
+    <script src="/static/js/main.js?v=20260930-management"></script>
 </body>
 
 </html>

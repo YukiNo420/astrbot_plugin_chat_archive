@@ -28,7 +28,14 @@
             "allowed_media_domains": {
                 "type": "list",
                 "description": "允许缓存的媒体域名",
-                "default": ["multimedia.nt.qq.com.cn", "gchat.qpic.cn", "q.qlogo.cn", "p.qlogo.cn", "q1.qlogo.cn", "gxh.vip.qq.com"],
+                "default": [
+                    "multimedia.nt.qq.com.cn",
+                    "gchat.qpic.cn",
+                    "q.qlogo.cn",
+                    "p.qlogo.cn",
+                    "q1.qlogo.cn",
+                    "gxh.vip.qq.com"
+                ],
                 "hint": "仅下载/代理这些域名及其子域名下的媒体，防止 SSRF 访问内网地址。也可用 ARCHIVE_ALLOWED_MEDIA_DOMAINS 环境变量覆盖，多个域名用英文逗号分隔。",
                 "items": {
                     "type": "string"
@@ -75,6 +82,36 @@
                 "description": "SQLite 最大连接数",
                 "default": 10,
                 "hint": "SQLite 连接池最大连接数，取值会被限制在 2-64。也可用 ARCHIVE_SQLITE_MAX_CONNECTIONS 环境变量覆盖。"
+            },
+            "message_retention_days": {
+                "type": "int",
+                "description": "消息保留天数（可恢复删除）",
+                "default": 0,
+                "hint": "0 禁用。正整数启用时每天将指定会话的过期消息移入回收站，每个会话每轮最多500条；不物理删除附件。回收站不会自动清空，也不会立即释放数据库空间。"
+            },
+            "message_retention_sessions": {
+                "type": "list",
+                "description": "启用保留策略的完整会话 ID",
+                "default": [],
+                "hint": "会话白名单：填写完整session_id。全局范围关闭时，空列表不处理任何会话；全局范围显式启用时，空白名单表示所有会话。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "message_retention_global": {
+                "type": "bool",
+                "description": "保留策略全局范围",
+                "default": false,
+                "hint": "默认关闭。显式启用且保留天数大于0时，空会话白名单表示所有会话；非空白名单仍限定范围。排除名单始终生效。仅移入回收站。"
+            },
+            "message_retention_excluded_sessions": {
+                "type": "list",
+                "description": "保留策略排除会话",
+                "default": [],
+                "hint": "排除的完整session_id；优先于全局范围和白名单。",
+                "items": {
+                    "type": "string"
+                }
             }
         }
     },

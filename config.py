@@ -9,6 +9,7 @@ from typing import Any
 from astrbot.api import logger
 
 PLUGIN_DIR = Path(__file__).resolve().parent
+PLUGIN_NAME = "astrbot_plugin_chat_archive"
 
 DEFAULT_ALLOWED_MEDIA_DOMAINS = {
     "multimedia.nt.qq.com.cn",
@@ -37,9 +38,30 @@ def get_data_dir() -> Path:
     try:
         from astrbot.api.star import StarTools
 
-        return Path(StarTools.get_data_dir()).expanduser().resolve()
-    except Exception:
-        return (PLUGIN_DIR / "data").resolve()
+        # Helpers are not registered Star modules: caller inference fails here.
+        data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME)).expanduser().resolve()
+    except (ImportError, AttributeError, TypeError):
+        # Older AstrBot versions and the standalone Web process use the same
+        # persistent root, never the replaceable plugin checkout.
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+            root = Path(get_astrbot_data_path())
+        except ImportError:
+            if PLUGIN_DIR.parent.name != "plugins":
+                raise RuntimeError("Set ARCHIVE_DATA_DIR when running outside AstrBot data/plugins")
+            root = PLUGIN_DIR.parent.parent
+        data_dir = (root / "plugin_data" / PLUGIN_NAME).resolve()
+
+    legacy = PLUGIN_DIR / "data"
+    if legacy.resolve() != data_dir and legacy.exists() and any(legacy.iterdir()):
+        raise RuntimeError(
+            f"Legacy archive data found at {legacy}. Stop all archive writers and "
+            f"back up this directory before moving its contents to {data_dir}. "
+            "Do not overwrite an existing destination or upgrade/reinstall the "
+            "plugin until migration is complete. See README migration instructions."
+        )
+    return data_dir
 
 
 def get_static_cache_dir() -> Path:

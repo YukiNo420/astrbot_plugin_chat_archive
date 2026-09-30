@@ -78,7 +78,10 @@ except ImportError:
 # 尝试导入 web server
 try:
     from .web.server import AdminServer
-except ImportError:
+except ImportError as exc:
+    from astrbot.api import logger
+
+    logger.error(f"Chat Archive: Web UI dependencies could not be imported: {exc}. Install requirements.txt in the AstrBot Python environment.")
     AdminServer = None
 
 from astrbot.api import logger

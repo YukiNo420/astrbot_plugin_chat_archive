@@ -92,6 +92,24 @@
 
 ---
 
+## 升级前的数据迁移与 Docker 排查
+
+默认数据库与媒体缓存使用 `data/plugin_data/astrbot_plugin_chat_archive/`，不会写入升级时可能被替换的插件目录。`ARCHIVE_DATA_DIR` 仍优先，已有自定义数据库路径仍有效。获取数据目录时发生权限或运行错误会明确失败，不再静默改用插件目录。
+
+如果插件目录内的 `data/` 非空，启动会提示迁移并停止，避免切换到空数据库后误以为旧记录已丢失。升级或重装前：
+
+1. 停止 AstrBot 和独立 Web 服务，确保没有归档写入者。
+2. 备份旧 `data/` **整个目录**，包括 `chat_history.db`、可能存在的 `-wal` / `-shm` 文件、`web_cache/` 与写入队列恢复文件；只复制数据库主文件可能遗漏 WAL 中的记录。
+3. 确认持久化目标 `data/plugin_data/astrbot_plugin_chat_archive/` 不包含已有归档。若两边已有数据，不要覆盖或混合文件，先保留两份备份并单独处理合并。
+4. 将旧目录全部内容移到目标，确认旧目录为空，检查文件权限以及自定义 `db_path`、`ARCHIVE_DB_PATH` 和 `ARCHIVE_DATA_DIR`。指向旧位置的绝对路径需同步调整；相对数据库路径仍按数据目录解析。
+5. 启动后确认历史消息、缓存和队列恢复正常，再升级插件。保留迁移前的备份。
+
+临时恢复旧位置访问可以显式设置 `ARCHIVE_DATA_DIR`，但该目录如果仍位于插件内，升级前必须迁移和备份。此修复不能找回已经被覆盖且没有备份的数据。
+
+Docker 需持久化整个 AstrBot `data/`，发布 Web 端口，并显式将 `web_server.host` 或 `ARCHIVE_HOST` 设置为 `0.0.0.0`；默认 `127.0.0.1` 仅允许容器内访问。镜像升级后需在新的 AstrBot Python 环境中安装 `requirements.txt`，持久化数据不会保留旧镜像中的 Python 依赖。依赖导入或 Web 线程启动失败现在会输出错误；“startup requested”仅表示已发起启动。不要用重装插件排查连接拒绝，以免覆盖旧数据。
+
+回归验证：`python -m unittest discover -s tests -v`；致命错误 lint：`ruff check --select E9,F63,F7,F82 config.py main.py web/server.py tests`。测试仅使用临时目录和本地临时端口，不需要运行 AstrBot。
+
 ## 🏗️ 系统架构
 
 ```mermaid

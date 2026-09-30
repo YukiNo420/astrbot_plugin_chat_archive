@@ -1525,7 +1525,13 @@ class AdminServer:
             return
 
         def _run():
-            asyncio.run(self.server.serve())
+            try:
+                asyncio.run(self.server.serve())
+            except (Exception, SystemExit) as exc:
+                logger.error(f"Chat Archive WebUI failed on {self.host}:{self.port}: {exc}")
+                return
+            if not self.server.started:
+                logger.error(f"Chat Archive WebUI did not start on {self.host}:{self.port}; check dependencies, bind address and port conflicts.")
 
         self.thread = threading.Thread(target=_run, daemon=True)
         self.thread.start()
@@ -1536,7 +1542,7 @@ class AdminServer:
             _load_custom_apis()
             _custom_apis_loaded = True
 
-        logger.info(f"Chat Archive WebUI started on http://{self.host}:{self.port}")
+        logger.info(f"Chat Archive WebUI startup requested on http://{self.host}:{self.port}")
 
     async def stop(self):
         """插件卸载时优雅关闭后台服务"""

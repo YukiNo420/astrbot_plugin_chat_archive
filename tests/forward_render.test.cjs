@@ -40,3 +40,14 @@ assert.doesNotMatch(context.formatMsg(command('%3Cimg%20src%3Dx%20onerror%3Daler
 assert.doesNotMatch(context.formatMsg(command('%5BCQ%3Aimage%2Curl%3Dhttps%3A%2F%2Fexample.com%2Fx%5D')), /<img/);
 assert.match(context.formatMsg('<qqbot-cmd-input text="/command" />'), /qqbot-cmd-input/);
 console.log('QQ command labels decode safely without executing tags, CQ codes or commands.');
+
+for (const type of ['image', 'video', 'record', 'file']) {
+    const rendered = context.formatMsg(`[CQ:${type},name=a&amp;b.txt,url=https://example.com/media?a=1&amp;b=2&#44;3&#91;4&#93;]`);
+    assert.match(rendered, /https:\/\/example.com\/media\?a=1&amp;b=2,3\[4\]/);
+    assert.doesNotMatch(rendered, /amp;amp|amp;#44|amp;#91/);
+}
+assert.match(context.formatMsg('[CQ:image,url=https://example.com/x?literal=&amp;amp;]'), /literal=&amp;amp;/);
+assert.match(context.formatMsg('[CQ:image,url=/static/cache/synthetic.png,width=64,height=32]'), /src="\/static\/cache\/synthetic.png"/);
+assert.match(context.formatMsg('[合并转发]\n1. sender: [CQ:image,url=/static/cache/synthetic.png]\n[合并转发结束]'), /msg-image/);
+assert.doesNotMatch(context.formatMsg('[CQ:image,url=javascript:alert(1)]'), /<img/);
+console.log('Media URLs preserve query separators, CQ escaping, literal entities and cached paths.');

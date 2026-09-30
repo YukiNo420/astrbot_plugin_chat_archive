@@ -970,9 +970,15 @@ function parseCqJsonData(data) {
     }
 }
 
-function decodeCqParamValue(value) {
+function decodeCqParamValue(value, htmlEscaped = false) {
     if (!value) return '';
-    return String(value)
+    let decoded = String(value);
+    // Media markers have already passed through escapeHtmlText. Remove exactly
+    // that layer before CQ decoding, preserving literal entities in the URL.
+    if (htmlEscaped) {
+        decoded = decoded.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    }
+    return decoded
         .replace(/&amp;/g, '&')
         .replace(/&#44;/g, ',')
         .replace(/&#91;/g, '[')
@@ -1306,7 +1312,7 @@ function formatMsg(text, depth = 0) {
     escaped = escaped.replace(/\[CQ:image,([^\]]+)\]/g, (match, inner) => {
         const urlMatch = inner.match(/url=([^,\]]+)/);
         if (urlMatch && urlMatch[1]) {
-            let url = decodeCqParamValue(urlMatch[1]);
+            let url = decodeCqParamValue(urlMatch[1], true);
             url = proxyUrl(url);
             if (!isSafeUrl(url)) return `<span class="msg-tag">🖼️ [图片]</span>`;
             const safeUrl = escapeAttr(url);
@@ -1330,7 +1336,7 @@ function formatMsg(text, depth = 0) {
     escaped = escaped.replace(/\[CQ:video,([^\]]+)\]/g, (match, inner) => {
         const urlMatch = inner.match(/url=([^,\]]+)/);
         if (urlMatch && urlMatch[1]) {
-            let url = decodeCqParamValue(urlMatch[1]);
+            let url = decodeCqParamValue(urlMatch[1], true);
             url = proxyUrl(url);
             if (!isSafeUrl(url)) return `<span class="msg-tag">🎬 [视频]</span>`;
             const safeUrl = escapeAttr(url);
@@ -1343,7 +1349,7 @@ function formatMsg(text, depth = 0) {
     escaped = escaped.replace(/\[CQ:record,([^\]]+)\]/g, (match, inner) => {
         const urlMatch = inner.match(/url=([^,\]]+)/);
         if (urlMatch && urlMatch[1]) {
-            let url = decodeCqParamValue(urlMatch[1]);
+            let url = decodeCqParamValue(urlMatch[1], true);
             url = proxyUrl(url);
             if (!isSafeUrl(url)) return `<span class="msg-tag">🎙️ [语音]</span>`;
             const safeUrl = escapeAttr(url);
@@ -1356,10 +1362,10 @@ function formatMsg(text, depth = 0) {
     escaped = escaped.replace(/\[CQ:file,([^\]]+)\]/g, (match, inner) => {
         const nameMatch = inner.match(/name=([^,\]]+)/);
         const urlMatch = inner.match(/url=([^,\]]+)/);
-        const fileName = nameMatch && nameMatch[1] ? decodeCqParamValue(nameMatch[1]) : '文件';
+        const fileName = nameMatch && nameMatch[1] ? decodeCqParamValue(nameMatch[1], true) : '文件';
         const safeName = escapeAttr(fileName);
         if (urlMatch && urlMatch[1]) {
-            let url = decodeCqParamValue(urlMatch[1]);
+            let url = decodeCqParamValue(urlMatch[1], true);
             url = proxyUrl(url);
             if (isSafeUrl(url)) {
                 return `<a class="msg-tag" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer">📄 ${safeName}</a>`;

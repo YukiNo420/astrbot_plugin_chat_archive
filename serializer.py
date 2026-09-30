@@ -216,8 +216,13 @@ def _serialize_forward_nodes(nodes) -> str:
             data = _node_data(node)
             node_id = _field(node, "id", "") or data.get("id") or ""
             content = f"[节点消息,id={node_id}]" if node_id else "[节点消息]"
+        # Indent continuation lines so nested node numbers cannot become siblings.
+        content = content.replace("\n", "\n    ")
         lines.append(f"{index}. {_node_sender_label(node)}: {content}")
-    return "\n".join(lines) if len(lines) > 1 else "[合并转发]"
+    if len(lines) > 1:
+        lines.append("[合并转发结束]")
+        return "\n".join(lines)
+    return "[合并转发]\n[合并转发结束]"
 
 
 def _serialize_forward_component(comp) -> str:
@@ -229,8 +234,8 @@ def _serialize_forward_component(comp) -> str:
 
     forward_id = getattr(comp, "id", "") or getattr(comp, "res_id", "")
     if forward_id:
-        return f"[合并转发,id={escape_cq_param(forward_id)}]"
-    return "[合并转发]"
+        return f"[合并转发,id={escape_cq_param(forward_id)}]\n[合并转发结束]"
+    return "[合并转发]\n[合并转发结束]"
 
 
 def serialize_onebot_message(message) -> str:
@@ -289,8 +294,8 @@ def serialize_onebot_message(message) -> str:
                 return text.replace("[合并转发]", f"[合并转发,id={escape_cq_param(forward_id)}]", 1)
             return text
         if forward_id:
-            return f"[合并转发,id={escape_cq_param(forward_id)}]"
-        return "[合并转发]"
+            return f"[合并转发,id={escape_cq_param(forward_id)}]\n[合并转发结束]"
+        return "[合并转发]\n[合并转发结束]"
     if seg_type == "node":
         return _serialize_forward_nodes([data])
 

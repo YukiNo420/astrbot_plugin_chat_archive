@@ -1125,7 +1125,7 @@ window.toggleForwardCard = (headerEl) => {
     }
 };
 
-function renderMergedForwardCard(forwardId, rest) {
+function renderMergedForwardCard(forwardId, rest, depth = 0) {
     const lines = safeText(rest).replace(/\r\n?/g, '\n').split('\n');
     const items = [];
     let currentItem = null;
@@ -1142,7 +1142,7 @@ function renderMergedForwardCard(forwardId, rest) {
                 content: lineMatch[2].trim()
             };
         } else if (currentItem) {
-            currentItem.content += '\n' + line;
+            currentItem.content += '\n' + line.replace(/^    /, '');
         } else if (line.trim()) {
             afterText += line + '\n';
         }
@@ -1157,7 +1157,7 @@ function renderMergedForwardCard(forwardId, rest) {
         const itemsHtml = items.map(item => `
             <div class="msg-forward-item">
                 <span class="msg-forward-sender">${escapeAttr(item.sender)}</span>
-                <span class="msg-forward-text">${formatMsg(item.content)}</span>
+                <span class="msg-forward-text">${formatMsg(item.content, depth + 1)}</span>
             </div>
         `).join('');
 
@@ -1196,6 +1196,26 @@ function renderMergedForwardCard(forwardId, rest) {
 
 function replaceMergedForwardCodes(text, replacer) {
     const value = safeText(text);
+    // New archives have balanced boundaries; retain the legacy text reader below.
+    if (value.includes('[合并转发结束]')) {
+        const tokens = /\[合并转发(?:,id=([^\]]*))?\]|\[合并转发结束\]/g;
+        let level = 0, start = 0, contentStart = 0, forwardId = '', result = '', cursor = 0;
+        for (const token of value.matchAll(tokens)) {
+            if (token[0] === '[合并转发结束]') {
+                if (level && --level === 0) {
+                    result += value.slice(cursor, start) + replacer(forwardId, value.slice(contentStart, token.index).replace(/^\r?\n/, '').replace(/\r?\n\s*$/, ''));
+                    cursor = token.index + token[0].length;
+                }
+            } else {
+                if (level++ === 0) {
+                    start = token.index;
+                    contentStart = token.index + token[0].length;
+                    forwardId = decodeCqParamValue(token[1] || '');
+                }
+            }
+        }
+        return result + value.slice(cursor);
+    }
     const index = value.indexOf('[合并转发');
     if (index === -1) return value;
 
@@ -1208,8 +1228,9 @@ function replaceMergedForwardCodes(text, replacer) {
     return beforeText + replacement;
 }
 
-function formatMsg(text) {
+function formatMsg(text, depth = 0) {
     if (!text) return "";
+    if (depth > 8) return escapeHtmlText(text);
 
     if (text.startsWith("<Event,") || (typeof text === 'string' && text.includes("'raw_message':"))) {
         const match = text.match(/['"]raw_message['"]\s*:\s*['"](.*?)['"]/);
@@ -1223,7 +1244,7 @@ function formatMsg(text) {
     const forwardCards = [];
     const makeForwardPlaceholder = (forwardId, rest) => {
         const index = forwardCards.length;
-        const rendered = renderMergedForwardCard(forwardId, rest);
+        const rendered = renderMergedForwardCard(forwardId, rest, depth);
         forwardCards.push(rendered.html);
         return makePrivateToken('FORWARD', index) + rendered.afterText;
     };

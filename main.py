@@ -11,6 +11,11 @@ from contextlib import contextmanager
 from typing import Any
 
 try:
+    from .forward_archive import expand_forward_payload
+except ImportError:
+    from forward_archive import expand_forward_payload
+
+try:
     from .config import get_data_dir, get_static_cache_dir
 except ImportError:
     from config import get_data_dir, get_static_cache_dir
@@ -485,11 +490,17 @@ class ChatArchivePlugin(Star):
                 )
                 continue
             messages = self._forward_response_messages(response)
+            try:
+                messages = await asyncio.wait_for(
+                    expand_forward_payload(messages, call_action), timeout=15
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Chat Archive: nested forward expansion timed out; preserving available content")
             text = serialize_onebot_message(messages).strip()
             if text:
                 if text.startswith("[合并转发]\n"):
-                    return text.replace("[合并转发]", f"[合并转发,id={forward_id}]", 1)
-                return f"[合并转发,id={forward_id}]\n{text}"
+                    return text.replace("[合并转发]", f"[合并转发,id={escape_cq_param(forward_id)}]", 1)
+                return f"[合并转发,id={escape_cq_param(forward_id)}]\n{text}\n[合并转发结束]"
             logger.warning(f"Chat Archive: get_forward_msg 返回空内容 {forward_id} {params}")
         return ""
 

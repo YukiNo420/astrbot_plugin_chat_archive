@@ -8,6 +8,15 @@ from collections.abc import Iterable
 from astrbot.api import logger
 
 
+_INLINE_MEDIA_RE = re.compile(
+    r"^(?:base64://|data:[^,\s]+;base64(?:,|&#44;))", re.IGNORECASE
+)
+_CQ_MEDIA_CODE_RE = re.compile(
+    r"\[CQ:(image|video|record|file),([^\]]*)\]", re.IGNORECASE
+)
+_CQ_PARAM_SPLIT_RE = re.compile(r",(?=[A-Za-z_][\w.-]*=)")
+
+
 def escape_cq_param(value) -> str:
     """Escape CQ parameter separators so stored media URLs remain parseable."""
     return (
@@ -17,6 +26,79 @@ def escape_cq_param(value) -> str:
         .replace("]", "&#93;")
         .replace(",", "&#44;")
     )
+
+
+def unescape_cq_param(value) -> str:
+    text = str(value or "")
+    replacements = (
+        ("&amp;", "&"),
+        ("&#44;", ","),
+        ("&#91;", "["),
+        ("&#93;", "]"),
+    )
+    for _ in range(3):
+        next_text = text
+        for old, new in replacements:
+            next_text = next_text.replace(old, new)
+        if next_text == text:
+            break
+        text = next_text
+    return text
+
+
+def is_inline_media_source(value) -> bool:
+    text = unescape_cq_param(value).strip()
+    return bool(text and _INLINE_MEDIA_RE.match(text))
+
+
+def clean_media_source(value) -> str:
+    text = str(value or "").strip()
+    return "" if is_inline_media_source(text) else text
+
+
+def clean_file_name(value, default: str = "文件") -> str:
+    text = str(value or "").strip()
+    return default if not text or is_inline_media_source(text) else text
+
+
+def _parse_cq_params(inner: str) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for part in _CQ_PARAM_SPLIT_RE.split(str(inner or "")):
+        key, sep, raw_value = part.partition("=")
+        if not sep:
+            continue
+        key = key.strip().lower()
+        if key:
+            params[key] = raw_value.strip()
+    return params
+
+
+def _inline_media_placeholder(cq_type: str, params: dict[str, str]) -> str:
+    cq_type = cq_type.lower()
+    if cq_type == "image":
+        return "[CQ:image]"
+    if cq_type == "video":
+        return "[CQ:video]"
+    if cq_type == "record":
+        return "[语音]"
+    if cq_type == "file":
+        name = unescape_cq_param(params.get("name") or "").strip()
+        return f"[文件: {name}]" if name else "[文件]"
+    return ""
+
+
+def sanitize_cq_media_codes(value) -> str:
+    """Replace inline base64 CQ media payloads with short archive placeholders."""
+    text = str(value or "")
+
+    def replace(match: re.Match) -> str:
+        cq_type = match.group(1).lower()
+        params = _parse_cq_params(match.group(2))
+        if any(is_inline_media_source(params.get(key)) for key in ("url", "file")):
+            return _inline_media_placeholder(cq_type, params) or match.group(0)
+        return match.group(0)
+
+    return _CQ_MEDIA_CODE_RE.sub(replace, text)
 
 
 def positive_int(value) -> int:
@@ -41,11 +123,15 @@ def read_image_dimensions(filepath: str) -> tuple[int, int] | None:
 
             if header[:8] == b"\x89PNG\r\n\x1a\n" and len(header) >= 24:
                 width, height = struct.unpack(">II", header[16:24])
-                return (width, height) if valid_image_dimensions(width, height) else None
+                return (
+                    (width, height) if valid_image_dimensions(width, height) else None
+                )
 
             if header[:3] == b"GIF":
                 width, height = struct.unpack("<HH", header[6:10])
-                return (width, height) if valid_image_dimensions(width, height) else None
+                return (
+                    (width, height) if valid_image_dimensions(width, height) else None
+                )
 
             if header[:2] == b"\xff\xd8":
                 f.seek(2)
@@ -85,7 +171,11 @@ def read_image_dimensions(filepath: str) -> tuple[int, int] | None:
                         if len(data) < 5:
                             break
                         height, width = struct.unpack(">HH", data[1:5])
-                        return (width, height) if valid_image_dimensions(width, height) else None
+                        return (
+                            (width, height)
+                            if valid_image_dimensions(width, height)
+                            else None
+                        )
                     f.seek(length - 2, 1)
                 return None
 
@@ -94,19 +184,31 @@ def read_image_dimensions(filepath: str) -> tuple[int, int] | None:
                 if chunk == b"VP8 " and len(header) >= 30:
                     width = struct.unpack("<H", header[26:28])[0] & 0x3FFF
                     height = struct.unpack("<H", header[28:30])[0] & 0x3FFF
-                    return (width, height) if valid_image_dimensions(width, height) else None
+                    return (
+                        (width, height)
+                        if valid_image_dimensions(width, height)
+                        else None
+                    )
                 if chunk == b"VP8L" and len(header) >= 25:
                     bits = struct.unpack("<I", header[21:25])[0]
                     width = (bits & 0x3FFF) + 1
                     height = ((bits >> 14) & 0x3FFF) + 1
-                    return (width, height) if valid_image_dimensions(width, height) else None
+                    return (
+                        (width, height)
+                        if valid_image_dimensions(width, height)
+                        else None
+                    )
                 if chunk == b"VP8X":
                     f.seek(24)
                     canvas = f.read(6)
                     if len(canvas) == 6:
                         width = (canvas[0] | (canvas[1] << 8) | (canvas[2] << 16)) + 1
                         height = (canvas[3] | (canvas[4] << 8) | (canvas[5] << 16)) + 1
-                        return (width, height) if valid_image_dimensions(width, height) else None
+                        return (
+                            (width, height)
+                            if valid_image_dimensions(width, height)
+                            else None
+                        )
     except Exception:
         return None
     return None
@@ -144,10 +246,12 @@ def _as_component_list(value) -> list:
 
 def _serialize_node_content(content) -> str:
     if isinstance(content, str):
-        return content
+        return sanitize_cq_media_codes(content)
     if isinstance(content, dict):
         return serialize_onebot_message(content)
-    if isinstance(content, list | tuple) and any(isinstance(item, dict) for item in content):
+    if isinstance(content, list | tuple) and any(
+        isinstance(item, dict) for item in content
+    ):
         return serialize_onebot_message(content)
     return serialize_message_chain(_as_component_list(content))
 
@@ -241,7 +345,7 @@ def _serialize_forward_component(comp) -> str:
 def serialize_onebot_message(message) -> str:
     """Serialize raw OneBot/NapCat message segments into archive text."""
     if isinstance(message, str):
-        return message
+        return sanitize_cq_media_codes(message)
     if isinstance(message, list | tuple):
         if message and all(_is_forward_node_dict(item) for item in message):
             return _serialize_forward_nodes(
@@ -258,15 +362,15 @@ def serialize_onebot_message(message) -> str:
     data = message.get("data") if isinstance(message.get("data"), dict) else {}
 
     if seg_type == "text":
-        return str(data.get("text") or "")
+        return sanitize_cq_media_codes(str(data.get("text") or ""))
     if seg_type == "image":
-        url = data.get("url") or data.get("file") or ""
+        url = clean_media_source(data.get("url") or data.get("file") or "")
         return f"[CQ:image,url={escape_cq_param(url)}]" if url else "[CQ:image]"
     if seg_type == "video":
-        url = data.get("url") or data.get("file") or ""
+        url = clean_media_source(data.get("url") or data.get("file") or "")
         return f"[CQ:video,url={escape_cq_param(url)}]" if url else "[CQ:video]"
     if seg_type == "record":
-        url = data.get("url") or data.get("file") or ""
+        url = clean_media_source(data.get("url") or data.get("file") or "")
         return f"[CQ:record,url={escape_cq_param(url)}]" if url else "[语音]"
     if seg_type == "face":
         return f"[CQ:face,id={escape_cq_param(data.get('id', ''))}]"
@@ -280,8 +384,8 @@ def serialize_onebot_message(message) -> str:
             payload = json.dumps(payload, ensure_ascii=False, default=str)
         return f"[CQ:json,data={escape_cq_param(payload)}]"
     if seg_type == "file":
-        name = data.get("name") or data.get("file") or "文件"
-        url = data.get("url") or ""
+        name = clean_file_name(data.get("name") or data.get("file") or "文件")
+        url = clean_media_source(data.get("url") or "")
         if url:
             return f"[CQ:file,name={escape_cq_param(name)},url={escape_cq_param(url)}]"
         return f"[文件: {name}]"
@@ -291,7 +395,9 @@ def serialize_onebot_message(message) -> str:
         if content:
             text = _serialize_forward_nodes(content)
             if forward_id and text.startswith("[合并转发]"):
-                return text.replace("[合并转发]", f"[合并转发,id={escape_cq_param(forward_id)}]", 1)
+                return text.replace(
+                    "[合并转发]", f"[合并转发,id={escape_cq_param(forward_id)}]", 1
+                )
             return text
         if forward_id:
             return f"[合并转发,id={escape_cq_param(forward_id)}]\n[合并转发结束]"
@@ -299,7 +405,7 @@ def serialize_onebot_message(message) -> str:
     if seg_type == "node":
         return _serialize_forward_nodes([data])
 
-    return str(data.get("text") or "")
+    return sanitize_cq_media_codes(str(data.get("text") or ""))
 
 
 def serialize_message_chain(chain) -> str:
@@ -311,24 +417,32 @@ def serialize_message_chain(chain) -> str:
             if cls_name == "Plain":
                 parts.append(getattr(comp, "text", ""))
             elif cls_name == "Image":
-                url = getattr(comp, "url", "") or getattr(comp, "file", "")
+                url = clean_media_source(
+                    getattr(comp, "url", "") or getattr(comp, "file", "")
+                )
                 if url:
                     url = escape_cq_param(url)
                     width = positive_int(getattr(comp, "width", 0))
                     height = positive_int(getattr(comp, "height", 0))
-                    dim_str = f",width={width},height={height}" if width and height else ""
+                    dim_str = (
+                        f",width={width},height={height}" if width and height else ""
+                    )
                     parts.append(f"[CQ:image,url={url}{dim_str}]")
                 else:
                     parts.append("[CQ:image]")
             elif cls_name == "Video":
-                url = getattr(comp, "url", "") or getattr(comp, "file", "")
+                url = clean_media_source(
+                    getattr(comp, "url", "") or getattr(comp, "file", "")
+                )
                 if url:
                     url = escape_cq_param(url)
                     parts.append(f"[CQ:video,url={url}]")
                 else:
                     parts.append("[CQ:video]")
             elif cls_name == "Record":
-                url = getattr(comp, "url", "") or getattr(comp, "file", "")
+                url = clean_media_source(
+                    getattr(comp, "url", "") or getattr(comp, "file", "")
+                )
                 if url:
                     url = escape_cq_param(url)
                     parts.append(f"[CQ:record,url={url}]")
@@ -352,8 +466,10 @@ def serialize_message_chain(chain) -> str:
             elif cls_name in ("Forward", "Node", "Nodes"):
                 parts.append(_serialize_forward_component(comp))
             elif cls_name == "File":
-                name = getattr(comp, "name", "文件")
-                url = getattr(comp, "url", "") or getattr(comp, "file", "")
+                name = clean_file_name(getattr(comp, "name", "文件"))
+                url = clean_media_source(
+                    getattr(comp, "url", "") or getattr(comp, "file", "")
+                )
                 if url:
                     name = escape_cq_param(name)
                     url = escape_cq_param(url)
@@ -368,4 +484,4 @@ def serialize_message_chain(chain) -> str:
                     parts.append(str(text))
         except Exception as e:
             logger.debug(f"Chat Archive: failed to serialize {cls_name}: {e}")
-    return "".join(parts)
+    return sanitize_cq_media_codes("".join(parts))

@@ -1,6 +1,7 @@
 """Exercise recoverable deletion on production schema and synthetic SQLite only."""
 
 import importlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 import logging
 from pathlib import Path
@@ -61,13 +62,16 @@ class ManagementTests(unittest.TestCase):
         preview = self.manager.preview(
             "synthetic-principal", "qq:group:42", message_id=1
         )
-        self.assertEqual(preview["shared_attachment_count"], 1)
+        self.assertNotIn("shared_attachment_count", preview)
         self.assertEqual(
             preview["message_utf8_bytes"],
             len("旧消息[CQ:image,url=/static/cache/shared.png]".encode()),
         )
         result = self.manager.delete(
-            "synthetic-principal", preview["preview_token"], "qq:group:42"
+            "synthetic-principal",
+            preview["preview_token"],
+            "qq:group:42",
+            confirm_count=preview["count"],
         )
         self.assertEqual(
             self.db.DatabaseManager.get_message_count(session_id="qq:group:42"), 1
@@ -98,7 +102,9 @@ class ManagementTests(unittest.TestCase):
                 ["qq:group:42", "arrived after preview", 300],
             )
             db.commit()
-        result = self.manager.delete("p", preview["preview_token"], "qq:group:42")
+        result = self.manager.delete(
+            "p", preview["preview_token"], "qq:group:42", confirm_count=preview["count"]
+        )
         self.assertEqual(result["count"], 2)
         with self.db.get_db_connection() as db:
             latest = db.execute(
@@ -119,20 +125,42 @@ class ManagementTests(unittest.TestCase):
     def test_changed_rows_principal_expiry_and_replay_rejected(self):
         preview = self.manager.preview("p", "qq:group:42")
         with self.assertRaises(ManagementConflict):
-            self.manager.delete("other", preview["preview_token"], "qq:group:42")
+            self.manager.delete(
+                "other",
+                preview["preview_token"],
+                "qq:group:42",
+                confirm_count=preview["count"],
+            )
         with self.db.get_db_connection() as db:
             db.execute("UPDATE chat_history SET message = 'synthetic edit' WHERE id=1")
             db.commit()
         with self.assertRaises(ManagementConflict):
-            self.manager.delete("p", preview["preview_token"], "qq:group:42")
+            self.manager.delete(
+                "p",
+                preview["preview_token"],
+                "qq:group:42",
+                confirm_count=preview["count"],
+            )
         preview = self.manager.preview("p", "qq:group:42")
         with patch("archive_management.time.time", return_value=10**12):
             with self.assertRaises(ManagementConflict):
-                self.manager.delete("p", preview["preview_token"], "qq:group:42")
+                self.manager.delete(
+                    "p",
+                    preview["preview_token"],
+                    "qq:group:42",
+                    confirm_count=preview["count"],
+                )
         preview = self.manager.preview("p", "qq:group:42")
-        self.manager.delete("p", preview["preview_token"], "qq:group:42")
+        self.manager.delete(
+            "p", preview["preview_token"], "qq:group:42", confirm_count=preview["count"]
+        )
         with self.assertRaises(ManagementConflict):
-            self.manager.delete("p", preview["preview_token"], "qq:group:42")
+            self.manager.delete(
+                "p",
+                preview["preview_token"],
+                "qq:group:42",
+                confirm_count=preview["count"],
+            )
 
     def test_failed_delete_is_atomic_and_restore_never_overwrites(self):
         with self.db.get_db_connection() as db:
@@ -142,7 +170,12 @@ class ManagementTests(unittest.TestCase):
             db.commit()
         preview = self.manager.preview("p", "qq:group:42")
         with self.assertRaises(Exception):
-            self.manager.delete("p", preview["preview_token"], "qq:group:42")
+            self.manager.delete(
+                "p",
+                preview["preview_token"],
+                "qq:group:42",
+                confirm_count=preview["count"],
+            )
         self.assertEqual(self.manager.storage("qq:group:42")["trash"]["count"], 0)
         self.assertEqual(
             self.db.DatabaseManager.get_message_count(session_id="qq:group:42"), 2
@@ -151,7 +184,9 @@ class ManagementTests(unittest.TestCase):
             db.execute("DROP TRIGGER fixture_fail")
             db.commit()
         preview = self.manager.preview("p", "qq:group:42")
-        result = self.manager.delete("p", preview["preview_token"], "qq:group:42")
+        result = self.manager.delete(
+            "p", preview["preview_token"], "qq:group:42", confirm_count=preview["count"]
+        )
         with self.db.get_db_connection() as db:
             db.execute(
                 "INSERT INTO chat_history (id,session_id,message) VALUES (1,'qq:group:42','keep collision')"
@@ -179,7 +214,12 @@ class ManagementTests(unittest.TestCase):
             self.db.DatabaseManager.get_message_count(session_id="tg:group:42"), 1
         )
         preview = self.manager.preview("p", "legacy:archive")
-        operation = self.manager.delete("p", preview["preview_token"], "legacy:archive")
+        operation = self.manager.delete(
+            "p",
+            preview["preview_token"],
+            "legacy:archive",
+            confirm_count=preview["count"],
+        )
         self.manager.restore(operation["operation_id"], "legacy:archive")
         with self.db.get_db_connection() as db:
             self.assertEqual(
@@ -212,23 +252,38 @@ class ManagementTests(unittest.TestCase):
             )
             db.commit()
         preview = self.manager.preview("p", "synthetic:large")
-        self.assertEqual((preview["count"], preview["matched_count"]), (500, 501))
-        result = self.manager.delete("p", preview["preview_token"], "synthetic:large")
-        self.assertEqual(result["count"], 500)
+        self.assertEqual((preview["count"], preview["matched_count"]), (501, 501))
+        result = self.manager.delete(
+            "p",
+            preview["preview_token"],
+            "synthetic:large",
+            confirm_count=preview["count"],
+        )
+        self.assertEqual(result["count"], 501)
         self.assertEqual(
-            self.db.DatabaseManager.get_message_count(session_id="synthetic:large"), 1
+            self.db.DatabaseManager.get_message_count(session_id="synthetic:large"), 0
         )
 
     def test_export_permanent_confirmation_and_global_retention_denylist(self):
         preview = self.manager.preview("p", "qq:group:42", message_id=2)
-        backup = self.manager.export("p", preview["preview_token"])
+        with self.manager.export("p", preview["preview_token"]) as exported:
+            backup = json.load(exported)
         self.assertEqual(backup["messages"][0]["message"], "new synthetic")
         with self.assertRaises(ValueError):
             self.manager.delete(
-                "p", preview["preview_token"], "qq:group:42", "permanent"
+                "p",
+                preview["preview_token"],
+                "qq:group:42",
+                "permanent",
+                confirm_count=preview["count"],
             )
         result = self.manager.delete(
-            "p", preview["preview_token"], "qq:group:42", "permanent", "永久删除"
+            "p",
+            preview["preview_token"],
+            "qq:group:42",
+            "permanent",
+            "永久删除",
+            confirm_count=preview["count"],
         )
         self.assertFalse(result["recoverable"])
         self.assertEqual(self.manager.storage("qq:group:42")["trash"]["count"], 0)
@@ -250,7 +305,7 @@ class ManagementTests(unittest.TestCase):
         def confirm(token, barrier):
             barrier.wait(timeout=3)
             try:
-                return self.manager.delete("p", token, "qq:group:42")
+                return self.manager.delete("p", token, "qq:group:42", confirm_count=2)
             except ManagementConflict:
                 return None
 
@@ -278,10 +333,14 @@ class ManagementTests(unittest.TestCase):
 
     def test_restore_partial_failure_rolls_back_and_trash_references_are_shared(self):
         preview = self.manager.preview("p", "tg:group:42")
-        self.manager.delete("p", preview["preview_token"], "tg:group:42")
+        self.manager.delete(
+            "p", preview["preview_token"], "tg:group:42", confirm_count=preview["count"]
+        )
         preview = self.manager.preview("p", "qq:group:42")
-        self.assertEqual(preview["shared_attachment_count"], 1)
-        result = self.manager.delete("p", preview["preview_token"], "qq:group:42")
+        self.assertNotIn("shared_attachment_count", preview)
+        result = self.manager.delete(
+            "p", preview["preview_token"], "qq:group:42", confirm_count=preview["count"]
+        )
         with self.db.get_db_connection() as db:
             db.execute(
                 "INSERT INTO chat_history (id,session_id,message) VALUES (2,'qq:group:42','keep collision')"
@@ -319,9 +378,11 @@ class ManagementTests(unittest.TestCase):
             )
             db.commit()
         preview = self.manager.preview("p", sid)
-        self.assertEqual(preview["cached_attachment_count"], 1)
-        self.assertEqual(preview["cached_attachment_bytes"], 0)
-        operation = self.manager.delete("p", preview["preview_token"], sid)
+        self.assertNotIn("cached_attachment_count", preview)
+        self.assertNotIn("cached_attachment_bytes", preview)
+        operation = self.manager.delete(
+            "p", preview["preview_token"], sid, confirm_count=preview["count"]
+        )
         self.manager.restore(operation["operation_id"], sid)
         self.assertEqual(
             self.db.DatabaseManager.get_message_count(session_id="qq:group:42"), 2

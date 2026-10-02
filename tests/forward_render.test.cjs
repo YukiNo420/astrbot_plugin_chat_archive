@@ -13,6 +13,7 @@ const context = {
     },
     console, URLSearchParams, setTimeout() {}, setInterval() {},
     ResizeObserver: class { observe() {} },
+    IntersectionObserver: class { observe() {} disconnect() {} },
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync('web/static/js/main.js', 'utf8'), context);
@@ -32,21 +33,28 @@ assert.doesNotMatch(context.formatMsg('[CQ:file,name=x,url=javascript:alert(1)]'
 assert.doesNotMatch(context.formatMsg('[合并转发]\n1. <script>: <img src=x>\n[合并转发结束]'), /<script>|<img src=x>/);
 console.log('Forward rendering, boundaries, legacy compatibility and URL safety passed.');
 const command = show => `<qqbot-cmd-input text="/%E7%BB%91%E5%AE%9A%20" show="${show}" reference="false" />`;
-assert.equal(context.formatMsg(command('%E7%BB%91%E5%AE%9A')), '绑定');
-assert.equal(context.formatMsg('before ' + command('ow%20%E8%B5%9B%E4%BA%8B') + ' after'), 'before ow 赛事 after');
-assert.equal(context.formatMsg(command('%ZZ')), '%ZZ');
+assert.equal(context.formatMsg(command('%E7%BB%91%E5%AE%9A')), '<p class="msg-md-p">绑定</p>');
+assert.equal(context.formatMsg('before ' + command('ow%20%E8%B5%9B%E4%BA%8B') + ' after'), '<p class="msg-md-p">before ow 赛事 after</p>');
+assert.equal(context.formatMsg(command('%ZZ')), '<p class="msg-md-p">%ZZ</p>');
 assert.match(context.formatMsg('URL https://example.com/%E7%BB%91%E5%AE%9A'), /%E7%BB%91%E5%AE%9A/);
 assert.doesNotMatch(context.formatMsg(command('%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E')), /<img/);
 assert.doesNotMatch(context.formatMsg(command('%5BCQ%3Aimage%2Curl%3Dhttps%3A%2F%2Fexample.com%2Fx%5D')), /<img/);
 assert.match(context.formatMsg('<qqbot-cmd-input text="/command" />'), /qqbot-cmd-input/);
 console.log('QQ command labels decode safely without executing tags, CQ codes or commands.');
 
+function mediaTarget(rendered) {
+    const attribute = rendered.match(/(?:href|src)="([^"]+)"/);
+    assert(attribute, 'Media must expose a usable URL');
+    const url = new URL(attribute[1].replaceAll('&amp;', '&'), 'http://archive.test');
+    return url.pathname.startsWith('/api/proxy/') ? url.searchParams.get('url') : url.href;
+}
+
 for (const type of ['image', 'video', 'record', 'file']) {
     const rendered = context.formatMsg(`[CQ:${type},name=a&amp;b.txt,url=https://example.com/media?a=1&amp;b=2&#44;3&#91;4&#93;]`);
-    assert.match(rendered, /https:\/\/example.com\/media\?a=1&amp;b=2,3\[4\]/);
+    assert.equal(mediaTarget(rendered), 'https://example.com/media?a=1&b=2,3[4]');
     assert.doesNotMatch(rendered, /amp;amp|amp;#44|amp;#91/);
 }
-assert.match(context.formatMsg('[CQ:image,url=https://example.com/x?literal=&amp;amp;]'), /literal=&amp;amp;/);
+assert.equal(mediaTarget(context.formatMsg('[CQ:image,url=https://example.com/x?literal=&amp;amp;]')), 'https://example.com/x?literal=&amp;');
 assert.match(context.formatMsg('[CQ:image,url=/static/cache/synthetic.png,width=64,height=32]'), /src="\/static\/cache\/synthetic.png"/);
 assert.match(context.formatMsg('[合并转发]\n1. sender: [CQ:image,url=/static/cache/synthetic.png]\n[合并转发结束]'), /msg-image/);
 assert.doesNotMatch(context.formatMsg('[CQ:image,url=javascript:alert(1)]'), /<img/);

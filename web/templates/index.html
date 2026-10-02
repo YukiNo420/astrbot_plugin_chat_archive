@@ -9,142 +9,236 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/main.css?v=20260930-management">
+    <link rel="stylesheet" href="/static/css/main.css?v=20261002-media-settings">
+    <link rel="stylesheet" href="/static/css/timeline.css?v=20261003-capsule-contrast">
     <link rel="icon" href="/static/logo.png" type="image/png">
 </head>
 
-<body>
+<body class="global-view auth-blocked">
+    <div id="app-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></div>
     <!-- Mobile Overlay -->
-    <div id="mobile-overlay" class="mobile-overlay"></div>
+    <div id="mobile-overlay" class="mobile-overlay" aria-hidden="true" inert></div>
 
-    <div id="auth-overlay">
+    <div id="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-title"
+        aria-describedby="auth-description" aria-hidden="false" data-od-id="auth-dialog">
         <div class="auth-card animate-fade">
-            <h2 style="margin-bottom: 0.5rem; font-weight: 800;">访问控制</h2>
-            <p style="color: var(--text-muted); margin-bottom: 2.5rem; font-size: 0.9rem;">Chat Archive Admin Panel</p>
-            <input type="password" id="api-key-input" placeholder="输入 API Key">
-            <button class="primary-btn" id="login-btn" style="width: 100%;">验证并进入</button>
-            <p id="auth-error"
-                style="color: var(--danger); margin-top: 1.25rem; font-size: 0.8rem; display: none; font-weight: 600;">
-                Key 校验失败</p>
+            <div class="auth-brand" aria-hidden="true">
+                <img class="auth-logo" src="/static/logo.png" width="44" height="44" alt="">
+                <span>ASTRBOT · CHAT ARCHIVE</span>
+            </div>
+            <h2 id="auth-title" data-od-id="auth-title">访问对话归档</h2>
+            <p id="auth-description" class="auth-description">请输入管理密钥以继续。密钥只会用于建立当前登录会话。</p>
+            <label class="field-label" for="api-key-input">API 密钥</label>
+            <input type="password" id="api-key-input" placeholder="输入 API 密钥" autocomplete="current-password"
+                aria-describedby="auth-error"
+                data-od-id="api-key-input">
+            <button class="primary-btn auth-submit" id="login-btn" type="button" data-od-id="login-button">
+                <span class="button-label">验证并进入</span>
+            </button>
+            <p id="auth-error" class="form-error" role="alert" aria-live="assertive">密钥校验失败</p>
         </div>
     </div>
 
     <!-- Sidebar -->
-    <div class="sidebar">
+    <aside class="sidebar" id="sessionSidebar" aria-label="会话导航" aria-hidden="true" inert
+        data-od-id="session-sidebar">
         <div class="sidebar-header">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-            <div style="display: flex; align-items: center; gap: 12px;">
-                <img src="/static/logo.png"
-                    style="width: 32px; height: 32px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);"
-                    alt="Logo">
-                <h1 style="margin: 0; font-size: 1.15rem; font-weight: 700; display: flex; align-items: center; gap: 0.75rem;"><span class="status-dot"></span>Chat Archive</h1>
-            </div>
-            <div id="btn-close-sidebar" class="close-sidebar-btn" style="display:none; color: white; padding: 5px; cursor: pointer; font-size: 1.5rem;">×</div>
-            </div>
-            <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.75rem; font-weight: 500;">
-                <span id="stat-total" style="color: var(--text-main); font-weight: 700;">0</span> 消息已存档 | <span
-                    id="stat-today" style="color: var(--text-main); font-weight: 700;">0</span> 今日
+            <div class="sidebar-header-row">
+                <div class="sidebar-brand">
+                    <img class="brand-logo" src="/static/logo.png" width="32" height="32" alt="Chat Archive 标志">
+                    <div>
+                        <h1 data-od-id="product-title"><span class="status-dot" aria-hidden="true"></span>Chat Archive</h1>
+                        <div class="archive-totals" data-od-id="archive-totals">
+                            <span><strong id="stat-total">0</strong> 条已归档</span>
+                            <span class="archive-total-divider" aria-hidden="true"></span>
+                            <span><strong id="stat-today">0</strong> 条今日</span>
+                        </div>
+                    </div>
+                </div>
+                <button id="btn-close-sidebar" class="icon-btn close-sidebar-btn" type="button" aria-label="关闭会话列表"
+                    data-od-id="close-session-drawer">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                </button>
             </div>
         </div>
-        <div class="platform-filter-bar" id="platformFilterBar"></div>
-        <div class="session-list" id="sessionList">
+        <div class="platform-filter-bar" id="platformFilterBar" role="toolbar" aria-label="按平台筛选会话"
+            data-od-id="platform-filter"></div>
+        <div class="session-list" id="sessionList" aria-label="会话列表" data-od-id="session-list">
             <!-- Sessions injected here -->
         </div>
-        <div style="padding: 1.25rem; border-top: 1px solid var(--glass-border); background: rgba(15, 23, 42, 0.4);">
-            <button class="primary-btn" id="logout-btn"
-                style="background: rgba(255,255,255,0.05); font-size: 0.75rem; width: 100%; border: 1px solid var(--glass-border);">退出登录</button>
+        <div class="sidebar-footer">
+            <button class="secondary-btn sidebar-settings" id="settings-btn" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg>
+                <span>设置</span>
+            </button>
+            <button class="secondary-btn sidebar-logout" id="logout-btn" type="button" data-od-id="logout-button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5H5v14h5M14 8l4 4-4 4M18 12H9" /></svg>
+                <span>退出登录</span>
+            </button>
         </div>
-    </div>
+    </aside>
 
     <!-- Main -->
-    <div class="main-container">
-        <header class="content-header">
-            
-            <div id="activeSessionId" style="font-size: 0.8rem; color: var(--text-muted); padding: 0.15rem 0 0.3rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;">尚未选择</div>
-            <div style="display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
-                <button class="primary-btn compact-control" id="home-btn" type="button">总览</button>
-                <button class="primary-btn compact-control" id="manage-btn" type="button">消息管理</button>
-                <div class="mobile-controls" style="display: none; flex-shrink: 0;">
-                    <div id="btn-sidebar" class="mobile-btn">☰ 会话</div>
-                    <div id="btn-analysis" class="mobile-btn">📊 分析</div>
-                </div>
-                <div class="search-area" style="flex: 1; min-width: 0;">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-                        stroke-linecap="round" stroke-linejoin="round" style="opacity: 0.4;">
-                        <circle cx="11" cy="11" r="8"></circle>
-                        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                    </svg>
-                    <input type="text" id="searchInput" placeholder="搜索...">
-                </div>
+    <main class="main-container" aria-hidden="true" inert data-od-id="archive-workspace">
+        <header class="content-header" data-od-id="content-header">
+            <button id="btn-sidebar" class="mobile-btn" type="button" aria-controls="sessionSidebar"
+                aria-expanded="false" data-od-id="open-session-drawer">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 12h10M4 19h16" /></svg>
+                <span>会话</span>
+            </button>
+            <div id="activeSessionId" data-od-id="active-session">尚未选择</div>
+            <div class="search-area" role="search" data-od-id="archive-search">
+                <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                </svg>
+                <label class="visually-hidden" for="searchInput">搜索聊天记录</label>
+                <input type="search" id="searchInput" placeholder="搜索当前会话…" autocomplete="off"
+                    data-od-id="search-input">
+                <button id="searchCancelBtn" class="search-cancel-btn" type="button" aria-label="清除并取消搜索"
+                    title="清除并取消搜索" hidden data-od-id="cancel-search">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17" /></svg>
+                </button>
             </div>
+            <div class="header-actions">
+                <button id="btn-analysis" title="查看成员、统计和时间筛选" class="mobile-btn" type="button" aria-controls="analysisPanel"
+                    aria-expanded="false" data-od-id="open-analysis-drawer">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7" /></svg>
+                    <span>会话详情</span>
+                </button>
+                <button id="refreshMessagesBtn" class="mobile-btn message-refresh-btn" type="button"
+                    aria-label="刷新消息" title="刷新消息" data-od-id="refresh-messages">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-1.6L20 8M4 16l2.3 2.6A7 7 0 0 0 17.9 17" /></svg>
+                </button>
+            </div>
+            <button id="settings-back" class="mobile-btn settings-back-btn" type="button">返回</button>
         </header>
 
-        <div class="message-viewport" id="messageList">
-            <div id="loadMoreWrap" style="display: none; padding: 1rem 0; text-align: center; margin-bottom: 1rem;">
-                <button class="primary-btn" id="loadMoreBtn" type="button" tabindex="-1"
-                    style="width: auto; padding: 0.4rem 2rem; background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border); color: var(--text-sub); border-radius: 100px; font-size: 0.8rem; cursor: pointer; transition: all 0.2s;">⇧
-                    加载更早的记录</button>
+        <div class="message-viewport" id="messageList" tabindex="0" aria-label="聊天记录" data-od-id="message-timeline">
+            <div id="loadMoreWrap" class="load-more-wrap" data-od-id="load-older-wrap">
+                <button class="secondary-btn load-more-btn" id="loadMoreBtn" type="button" hidden data-od-id="load-older-button">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 5-5 5 5M12 6v12" /></svg>
+                    <span>加载更早的记录</span>
+                </button>
             </div>
-            <div class="empty-state">
+            <div class="empty-state" data-od-id="initial-empty-state">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
-                    stroke-linejoin="round">
+                    stroke-linejoin="round" aria-hidden="true">
                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                 </svg>
-                <p style="font-weight: 600; font-size: 1.1rem; color: var(--text-sub);">点击左侧列表查看聊天记录</p>
-                <p style="font-size: 0.9rem; max-width: 250px;">归档的所有对话都将安全地存储在这里，您可以随时通过搜索找到它们。</p>
+                <h2>选择一段会话</h2>
+                <p>从会话列表进入历史记录，或直接搜索整个归档。</p>
             </div>
         </div>
 
         <div class="floating-actions">
-            <button class="action-btn" id="scrollToBottomBtn" title="跳转到最新消息" style="display: none;">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-                    stroke-linecap="round" stroke-linejoin="round">
+            <button class="action-btn" id="scrollToBottomBtn" type="button" title="跳转到最新消息"
+                aria-label="跳转到最新消息" data-od-id="jump-to-latest">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M7 13l5 5 5-5M7 6l5 5 5-5" />
                 </svg>
             </button>
         </div>
-    </div>
+    </main>
 
     <!-- Analysis Panel -->
-    <div class="analysis-panel" id="analysisPanel" style="display: flex; flex-direction: column;">
-        <div class="analysis-header"
-            style="flex-direction: column; align-items: stretch; height: auto; padding: 1.25rem 1.25rem 1rem;">
-            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
-                <h2 style="margin: 0; font-size: 1.1rem; font-weight: 700;">📈 数据分析</h2>
-                <div id="btn-close-analysis" class="close-analysis-btn" style="display:none; color: white; padding: 5px; cursor: pointer; font-size: 1.5rem;">×</div>
+    <aside class="analysis-panel" id="analysisPanel" aria-label="会话分析" aria-hidden="true" inert
+        data-od-id="analysis-panel">
+        <div class="analysis-header">
+            <div class="analysis-title-row">
+                <h2 data-od-id="analysis-title">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7" /></svg>
+                    <span>数据分析</span>
+                </h2>
+                <button id="btn-close-analysis" class="icon-btn close-analysis-btn" type="button"
+                    aria-label="关闭数据分析" data-od-id="close-analysis-drawer">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                </button>
             </div>
 
-            <div class="time-filters">
-                <button class="time-btn active" data-range="all">全部</button>
-                <button class="time-btn" data-range="today">今日</button>
-                <button class="time-btn" data-range="week">本周</button>
-                <button class="time-btn" data-range="month">本月</button>
-                <button class="time-btn" data-range="year">今年</button>
+            <div class="time-filters" role="group" aria-label="统计时间范围" data-od-id="time-presets">
+                <button class="time-btn active" type="button" data-range="all">全部</button>
+                <button class="time-btn" type="button" data-range="today">今日</button>
+                <button class="time-btn" type="button" data-range="week">本周</button>
+                <button class="time-btn" type="button" data-range="month">本月</button>
+                <button class="time-btn" type="button" data-range="year">今年</button>
             </div>
-            <div class="time-custom">
-                <input type="datetime-local" id="timeStart" class="time-input" title="开始时间">
-                <span style="color: var(--text-muted); font-size: 0.8rem;">-</span>
-                <input type="datetime-local" id="timeEnd" class="time-input" title="结束时间">
+            <div class="time-custom" data-od-id="custom-time-range">
+                <label class="time-field" for="timeStart">
+                    <span class="time-field-label">开始时间</span>
+                    <input type="datetime-local" id="timeStart" class="time-input" title="开始时间"
+                        data-od-id="time-start">
+                </label>
+                <label class="time-field" for="timeEnd">
+                    <span class="time-field-label">结束时间</span>
+                    <input type="datetime-local" id="timeEnd" class="time-input" title="结束时间"
+                        data-od-id="time-end">
+                </label>
             </div>
         </div>
-        <div class="analysis-content" id="analysisContent">
+        <div class="analysis-content" id="analysisContent" aria-live="polite" data-od-id="analysis-content">
             <!-- Stats and Top Users injected here -->
         </div>
-    </div>
+    </aside>
 
-    <dialog id="manage-dialog" class="management-dialog">
-        <div class="management-heading"><h2>消息管理</h2><button id="manage-close" type="button">关闭</button></div>
-        <p id="manage-session" class="management-session"></p>
-        <p>默认移入可恢复的回收站。可选永久删除消息，需二次确认，且不能从回收站恢复。可先导出 JSON 备份；备份不含附件，也不提供自动导入。缓存附件保留，SQLite 文件不会立即缩小。</p>
-        <label>仅处理此时间之前的消息（留空表示当前会话）<input type="datetime-local" id="manage-before"></label>
-        <label>删除方式 <select id="manage-mode"><option value="trash">移入回收站（可恢复）</option><option value="permanent">永久删除消息（不可恢复）</option></select></label>
-        <button class="primary-btn" id="manage-preview" type="button">预览存储与删除范围</button>
-        <button class="primary-btn" id="manage-export" type="button" disabled>导出本批消息 JSON 备份</button>
-        <p id="manage-status" role="status"></p>
-        <button class="primary-btn" id="manage-confirm" type="button" disabled>确认处理预览消息</button>
-        <h3>回收站</h3><div id="manage-trash"></div>
-    </dialog>
-    <script src="/static/js/main.js?v=20260930-management"></script>
+    <template id="settings-management-template">
+        <section id="management-page" class="settings-page management-page" aria-labelledby="settings-title">
+            <h1 id="settings-title" class="visually-hidden" tabindex="-1">消息管理</h1>
+            <section class="settings-card" aria-labelledby="manage-scope-title">
+                <h2 id="manage-scope-title">管理范围</h2>
+                <div class="management-fields">
+                    <label class="management-field" for="manage-session-select">对话
+                        <select id="manage-session-select"><option value="">请选择对话</option></select>
+                    </label>
+                    <label class="management-field" for="manage-start">开始时间
+                        <input type="datetime-local" id="manage-start" aria-describedby="manage-time-hint">
+                    </label>
+                    <label class="management-field" for="manage-end">结束时间
+                        <input type="datetime-local" id="manage-end" aria-describedby="manage-time-hint">
+                    </label>
+                    <p class="management-time-hint" id="manage-time-hint">留空不限时间</p>
+                    <label class="management-field" for="manage-mode">处理方式
+                        <select id="manage-mode"><option value="trash">移入回收站</option><option value="permanent">永久删除</option></select>
+                    </label>
+                </div>
+                <div class="management-actions">
+                    <button class="secondary-btn" id="manage-export" type="button" disabled>导出消息</button>
+                    <button class="secondary-btn" id="manage-confirm" type="button" disabled>确认处理</button>
+                </div>
+                <p id="manage-status" role="status" aria-live="polite"></p>
+            </section>
+            <section class="settings-card management-trash-card" aria-labelledby="manage-trash-title">
+                <h2 id="manage-trash-title">回收站</h2><div id="manage-trash"></div>
+            </section>
+        </section>
+    </template>
+
+    <template id="settings-template">
+        <section class="settings-page" aria-labelledby="settings-title">
+            <h1 id="settings-title" class="visually-hidden" tabindex="-1">设置</h1>
+            <section class="settings-card" aria-labelledby="settings-display-title">
+                <h2 id="settings-display-title">消息显示</h2>
+                <label class="settings-row" for="show-message-media">
+                    <span class="settings-copy">
+                        <span class="settings-label">显示图片 / 视频</span>
+                    </span>
+                    <span class="settings-switch">
+                        <input id="show-message-media" type="checkbox" role="switch" checked>
+                        <span class="settings-switch-track" aria-hidden="true"></span>
+                    </span>
+                </label>
+            </section>
+            <button class="settings-navigation settings-row" id="settings-management" type="button">
+                <span class="settings-copy"><span class="settings-label">消息管理</span></span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+            </button>
+            <p class="settings-save-status" id="settings-save-status" role="status"></p>
+        </section>
+    </template>
+    <script src="/static/js/timeline.js?v=20261003-header-offset"></script>
+    <script src="/static/js/dom.js?v=20261002-avatar-stable"></script>
+    <script src="/static/js/main.js?v=20261003-search-terms"></script>
+    <script src="/static/js/management.js?v=20261002-unlimited-delete"></script>
 </body>
 
 </html>

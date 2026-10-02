@@ -10,6 +10,12 @@
                 "default": true,
                 "hint": "是否实时记录聊天消息到数据库中。"
             },
+            "group_admin_only": {
+                "type": "bool",
+                "description": "仅允许群主/管理员调用本群存档 LLM 工具",
+                "default": true,
+                "hint": "仅限制群聊中的 archive_get_* 调用；私聊用户仍可查询当前私聊会话。AstrBot 当前配置的超级管理员不受影响。群主/管理员通过 OneBot get_group_member_info 的 role=owner/admin 判断。"
+            },
             "ignored_users": {
                 "type": "list",
                 "description": "忽略用户",
@@ -23,7 +29,7 @@
                 "type": "bool",
                 "description": "缓存媒体原文件",
                 "default": false,
-                "hint": "对于图片和视频，是否下载原文件缓存到本地，避免因为 QQ 原图过期或防盗链导致无法查看。"
+                "hint": "对于图片、视频及 Telegram 文件/头像，是否在后台下载原文件缓存到持久数据目录。关闭时 Telegram 媒体只记录占位符，绝不触发文件下载。"
             },
             "allowed_media_domains": {
                 "type": "list",
@@ -34,9 +40,10 @@
                     "q.qlogo.cn",
                     "p.qlogo.cn",
                     "q1.qlogo.cn",
-                    "gxh.vip.qq.com"
+                    "gxh.vip.qq.com",
+                    "cdn.discordapp.com"
                 ],
-                "hint": "仅下载/代理这些域名及其子域名下的媒体，防止 SSRF 访问内网地址。也可用 ARCHIVE_ALLOWED_MEDIA_DOMAINS 环境变量覆盖，多个域名用英文逗号分隔。",
+                "hint": "仅下载/代理这些域名及其子域名下的媒体，防止 SSRF 访问内网地址；显式留空表示拒绝全部远程媒体。也可用 ARCHIVE_ALLOWED_MEDIA_DOMAINS 环境变量覆盖，多个域名用英文逗号分隔。",
                 "items": {
                     "type": "string"
                 }
@@ -53,11 +60,19 @@
                 "default": 50,
                 "hint": "限制单个图片或视频的最大下载/代理体积，取值会被限制在 1-200 MB。也可用 ARCHIVE_MEDIA_MAX_MB 环境变量覆盖。"
             },
+            "media_cache_max_mb": {
+                "type": "int",
+                "description": "媒体缓存总容量上限 MB",
+                "default": 10240,
+                "min": 256,
+                "max": 102400,
+                "hint": "全部媒体缓存配额，范围256–102400 MB；默认保留现有文件，容量不足时拒绝新缓存。只有明确开启allow_cache_eviction才淘汰旧缓存。"
+            },
             "enable_clean": {
                 "type": "bool",
                 "description": "开启定期清理",
                 "default": false,
-                "hint": "是否定期自动清理过期的图片和视频缓存文件。"
+                "hint": "默认关闭。年龄清理还要求明确开启allow_cache_eviction；实际删除不可恢复，可能破坏仍有引用的附件。"
             },
             "clean_days": {
                 "type": "int",
@@ -69,7 +84,7 @@
                 "type": "string",
                 "description": "数据库文件路径",
                 "default": "",
-                "hint": "自定义 SQLite 数据库文件路径。支持 ~、环境变量和相对路径；相对路径默认基于插件数据目录。Docker 部署时请填写容器内路径，宿主机数据库需先挂载到容器。也可用 ARCHIVE_DB_PATH 覆盖。留空则使用默认位置 (data/chat_history.db)。修改后需要重启插件/服务。"
+                "hint": "自定义 SQLite 数据库文件路径。支持 ~、环境变量和相对路径；相对路径默认基于插件数据目录。Docker 部署时请填写容器内路径，宿主机数据库需先挂载到容器。也可用 ARCHIVE_DB_PATH 覆盖。留空则使用 data/plugin_data/astrbot_plugin_chat_archive/chat_history.db。修改后需要重启插件/服务。"
             },
             "sqlite_journal_mode": {
                 "type": "string",
@@ -112,6 +127,12 @@
                 "items": {
                     "type": "string"
                 }
+            },
+            "allow_cache_eviction": {
+                "type": "bool",
+                "description": "允许不可恢复的缓存淘汰",
+                "default": false,
+                "hint": "默认关闭。关闭时总配额只限制新缓存，不自动删除现有附件；开启才允许配额淘汰，以及enable_clean启用的年龄清理。此策略不证明附件无引用。"
             }
         }
     },
@@ -142,7 +163,19 @@
                 "type": "string",
                 "description": "访问验证 Key",
                 "default": "",
-                "hint": "为确保安全，必须配置此访问令牌。请任意输入一段安全的字符串密码。也可用 ARCHIVE_API_KEY 环境变量覆盖。"
+                "hint": "建议配置强随机访问令牌；留空时内置服务会在每次启动生成随机令牌并打印到日志。也可用 ARCHIVE_API_KEY 环境变量覆盖。"
+            },
+            "auth_failure_limit": {
+                "type": "int",
+                "description": "登录失败锁定阈值",
+                "default": 8,
+                "hint": "同一客户端在 5 分钟内连续输错达到该次数后将临时锁定，取值会被限制在 3-60。也可用 ARCHIVE_AUTH_FAILURE_LIMIT 环境变量覆盖。"
+            },
+            "auth_lockout_seconds": {
+                "type": "int",
+                "description": "登录失败锁定秒数",
+                "default": 300,
+                "hint": "触发登录失败阈值后的锁定时长，取值会被限制在 30-3600 秒。也可用 ARCHIVE_AUTH_LOCKOUT_SECONDS 环境变量覆盖。"
             }
         }
     }

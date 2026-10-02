@@ -1,0 +1,37 @@
+name: Publish release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract the approved changelog
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          tag = os.environ['RELEASE_TAG']
+          version = tag.removeprefix('v')
+          metadata = Path('metadata.yaml').read_text()
+          assert re.search(r'^version: ' + re.escape(tag) + r'$', metadata, re.M)
+          marker = f'## {version}\n'
+          changelog = Path('CHANGELOG.md').read_text()
+          assert marker in changelog
+          notes = changelog.split(marker, 1)[1].split('\n## ', 1)[0].strip()
+          assert notes
+          (Path(os.environ['RUNNER_TEMP']) / 'release-notes.md').write_text(notes + '\n')
+          PY
+      - name: Publish the tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "Chat Archive $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md"

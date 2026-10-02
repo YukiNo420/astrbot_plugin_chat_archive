@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import json
-from pathlib import Path
-import re
 import secrets
-import stat
+import tempfile
 import threading
 import time
+from pathlib import Path
 
 BATCH_LIMIT = 500
 PREVIEW_TTL = 300
@@ -37,34 +35,86 @@ def ensure_management_schema(db):
     )""")
 
 
-def session_scope(session_id):
+def session_scope(session_id, message_id=0, before_ts=0, start_ts=0, end_ts=0):
+    """Build a parameterized session scope with inclusive start and end bounds."""
     sid = str(session_id or "").strip()
     if not sid or len(sid) > 256:
         raise ValueError("必须指定完整会话 ID")
-    if sid == "legacy:archive":
-        return "COALESCE(NULLIF(session_id, ''), 'legacy:archive') = ?", [sid]
-    return "session_id = ?", [sid]
+    for value in (message_id, before_ts, start_ts, end_ts):
+        if type(value) is not int or value < 0:
+            raise ValueError("消息 ID 或时间无效")
+    if start_ts and end_ts and start_ts > end_ts:
+        raise ValueError("开始时间不能晚于结束时间")
+    where = (
+        "COALESCE(NULLIF(session_id, ''), 'legacy:archive') = ?"
+        if sid == "legacy:archive"
+        else "session_id = ?"
+    )
+    params = [sid]
+    for value, condition in (
+        (message_id, "id = ?"),
+        (before_ts, "timestamp < ?"),
+        (start_ts, "timestamp >= ?"),
+        (end_ts, "timestamp <= ?"),
+    ):
+        if value:
+            where += " AND " + condition
+            params.append(value)
+    return where, params
 
 
-def _fingerprint(rows):
-    return hashlib.sha256(
-        json.dumps(rows, sort_keys=True, ensure_ascii=False).encode()
-    ).hexdigest()
+def _scope_snapshot(db, where, params):
+    """Fingerprint every selected row without keeping the whole archive in memory.
+
+    Args:
+        db: Connection owned by the caller's read or write transaction.
+        where: Parameterized message selection predicate.
+        params: Values bound to the selection predicate.
+
+    Returns:
+        The exact row count, content fingerprint, highest ID and text byte count.
+    """
+    digest = hashlib.sha256()
+    last_id = count = message_bytes = 0
+    while True:
+        rows = db.execute(
+            f"SELECT * FROM chat_history WHERE {where} AND id > ? ORDER BY id LIMIT ?",
+            [*params, last_id, BATCH_LIMIT],
+        ).fetchall()
+        if not rows:
+            break
+        digest.update(json.dumps(rows, sort_keys=True, ensure_ascii=False).encode())
+        count += len(rows)
+        message_bytes += sum(len((row["message"] or "").encode()) for row in rows)
+        last_id = rows[-1]["id"]
+    return {
+        "count": count,
+        "fingerprint": digest.hexdigest(),
+        "max_id": last_id,
+        "message_utf8_bytes": message_bytes,
+    }
 
 
-def _cache_names(message):
-    names = set()
-    for marker in re.findall(r"\[CQ:(?:image|video|record),([^\]]+)\]", message or ""):
-        match = re.search(r"(?:^|,)url=([^,]+)", marker)
-        if match:
-            url = html.unescape(match.group(1))
-            local = re.fullmatch(r"/static/cache/([A-Za-z0-9_.-]+)", url)
-            if local and local.group(1) not in {".", ".."}:
-                names.add(local.group(1))
-    return names
+def _refresh_session(db, sid, rows=(), *, user_ids=None):
+    """Refresh affected summaries without exceeding SQLite parameter limits.
 
-
-def _refresh_session(db, sid):
+    Args:
+        db: Connection within the caller's transaction.
+        sid: Session whose latest message and count must be rebuilt.
+        rows: Small legacy batch used to identify affected users.
+        user_ids: Optional complete set of affected users from a chunked operation.
+    """
+    # Production materialized user rankings must be rebuilt in this transaction.
+    try:
+        from .db_config import rebuild_user_stats
+    except ImportError:
+        from db_config import rebuild_user_stats
+    if user_ids is None:
+        records = [json.loads(r["row_json"]) if "row_json" in r else r for r in rows]
+        user_ids = {r.get("user_id") for r in records}
+    users = list(user_ids)
+    for start in range(0, len(users), BATCH_LIMIT):
+        rebuild_user_stats(db, users[start : start + BATCH_LIMIT])
     where, params = session_scope(sid)
     db.execute("DELETE FROM session_stats WHERE session_id = ?", [sid])
     db.execute(
@@ -84,18 +134,10 @@ class ArchiveManager:
         self._previews = {}
         self._lock = threading.Lock()
 
-    def _select(self, db, session_id, message_id=0, before_ts=0):
-        where, params = session_scope(session_id)
-        if message_id:
-            if message_id < 1:
-                raise ValueError("消息 ID 无效")
-            where += " AND id = ?"
-            params.append(message_id)
-        if before_ts:
-            if before_ts < 1:
-                raise ValueError("截止时间无效")
-            where += " AND timestamp < ?"
-            params.append(before_ts)
+    def _select(self, db, session_id, message_id=0, before_ts=0, start_ts=0, end_ts=0):
+        where, params = session_scope(
+            session_id, message_id, before_ts, start_ts, end_ts
+        )
         total = db.execute(
             f"SELECT COUNT(*) AS count FROM chat_history WHERE {where}", params
         ).fetchone()["count"]
@@ -105,45 +147,28 @@ class ArchiveManager:
         ).fetchall()
         return rows, total
 
-    def preview(self, principal, session_id, message_id=0, before_ts=0):
+    def preview(
+        self, principal, session_id, message_id=0, before_ts=0, start_ts=0, end_ts=0
+    ):
+        """Snapshot all messages in the range for one explicit confirmation."""
+        where, params = session_scope(
+            session_id, message_id, before_ts, start_ts, end_ts
+        )
         with self.connection_factory() as db:
-            rows, total = self._select(db, session_id, message_id, before_ts)
-            if not rows:
-                raise ValueError("没有符合条件的消息")
-            names = set().union(*(_cache_names(row["message"]) for row in rows))
-            selected_ids = {row["id"] for row in rows}
-            shared = set()
-            for name in names:
-                candidates = db.execute(
-                    "SELECT id,message FROM chat_history WHERE message LIKE ? ESCAPE '\\'",
-                    ["%/static/cache/" + name.replace("_", "\\_") + "%"],
-                ).fetchall()
-                if any(
-                    row["id"] not in selected_ids
-                    and name in _cache_names(row["message"])
-                    for row in candidates
-                ):
-                    shared.add(name)
-                if name not in shared:
-                    trashed = db.execute(
-                        "SELECT row_json FROM archive_trash WHERE row_json LIKE ? ESCAPE '\\'",
-                        ["%/static/cache/" + name.replace("_", "\\_") + "%"],
-                    ).fetchall()
-                    if any(
-                        name
-                        in _cache_names(json.loads(item["row_json"]).get("message"))
-                        for item in trashed
-                    ):
-                        shared.add(name)
-            cached_bytes = 0
-            for name in names:
-                file = self.cache_dir / name
-                try:
-                    info = file.lstat()
-                    if stat.S_ISREG(info.st_mode):
-                        cached_bytes += info.st_size
-                except OSError:
-                    pass
+            db.execute("BEGIN")
+            snapshot = _scope_snapshot(db, where, params)
+            db.rollback()
+        total = snapshot["count"]
+        if not total:
+            return {
+                "preview_token": None,
+                "session_id": str(session_id).strip(),
+                "count": 0,
+                "matched_count": 0,
+                "remaining_count": 0,
+                "expires_in": PREVIEW_TTL,
+                "attachments_preserved": True,
+            }
         token = secrets.token_urlsafe(32)
         now = time.time()
         with self._lock:
@@ -158,21 +183,21 @@ class ArchiveManager:
                 "principal": principal,
                 "expires": now + PREVIEW_TTL,
                 "session_id": str(session_id).strip(),
-                "ids": [row["id"] for row in rows],
-                "fingerprint": _fingerprint(rows),
+                "fingerprint": snapshot["fingerprint"],
+                "message_id": message_id,
+                "before_ts": before_ts,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+                "max_id": snapshot["max_id"],
+                "matched_count": total,
             }
         return {
             "preview_token": token,
             "session_id": str(session_id).strip(),
-            "count": len(rows),
+            "count": total,
             "matched_count": total,
-            "remaining_count": total - len(rows),
-            "message_utf8_bytes": sum(
-                len((row["message"] or "").encode()) for row in rows
-            ),
-            "cached_attachment_bytes": cached_bytes,
-            "cached_attachment_count": len(names),
-            "shared_attachment_count": len(shared),
+            "remaining_count": 0,
+            "message_utf8_bytes": snapshot["message_utf8_bytes"],
             "attachments_preserved": True,
             "expires_in": PREVIEW_TTL,
         }
@@ -195,7 +220,7 @@ class ArchiveManager:
                     ],
                 )
             db.execute("DELETE FROM chat_history WHERE id = ?", [row["id"]])
-        _refresh_session(db, session_id)
+        _refresh_session(db, session_id, rows)
         return {
             "operation_id": operation,
             "count": len(rows),
@@ -204,6 +229,15 @@ class ArchiveManager:
         }
 
     def export(self, principal, preview_token):
+        """Write every matching message to a temporary JSON download in bounded chunks.
+
+        Args:
+            principal: Authenticated owner of the preview.
+            preview_token: Unexpired preview binding the session and time range.
+
+        Returns:
+            A rewound binary temporary file. The response owns closing it.
+        """
         with self._lock:
             preview = self._previews.get(preview_token)
             if (
@@ -212,21 +246,66 @@ class ArchiveManager:
                 or preview["principal"] != principal
             ):
                 raise ManagementConflict("预览已失效，请重新预览")
-        with self.connection_factory() as db:
-            placeholders = ",".join("?" for _ in preview["ids"])
-            rows = db.execute(
-                f"SELECT * FROM chat_history WHERE id IN ({placeholders}) ORDER BY id",
-                preview["ids"],
-            ).fetchall()
-            if _fingerprint(rows) != preview["fingerprint"]:
-                raise ManagementConflict("消息在预览后发生变化，请重新预览")
-        return {
-            "format": "chat-archive-message-backup-v1",
-            "session_id": preview["session_id"],
-            "exported_at": int(time.time()),
-            "messages": rows,
-            "attachments_included": False,
-        }
+        backup = tempfile.TemporaryFile(mode="w+b")
+        try:
+            with self.connection_factory() as db:
+                db.execute("BEGIN")
+                where, params = session_scope(
+                    preview["session_id"],
+                    preview["message_id"],
+                    preview["before_ts"],
+                    preview["start_ts"],
+                    preview["end_ts"],
+                )
+                where += " AND id <= ?"
+                params.append(preview["max_id"])
+                snapshot = _scope_snapshot(db, where, params)
+                total = snapshot["count"]
+                if (
+                    total != preview["matched_count"]
+                    or snapshot["fingerprint"] != preview["fingerprint"]
+                ):
+                    raise ManagementConflict("消息范围已变化，请重新预览")
+                metadata = {
+                    "format": "chat-archive-message-backup-v1",
+                    "session_id": preview["session_id"],
+                    "exported_at": int(time.time()),
+                    "start_ts": preview["start_ts"],
+                    "end_ts": preview["end_ts"],
+                    "message_count": total,
+                    "attachments_included": False,
+                }
+                backup.write(
+                    (
+                        json.dumps(metadata, ensure_ascii=False)[:-1] + ',"messages":['
+                    ).encode()
+                )
+                last_id = 0
+                first = True
+                while True:
+                    rows = db.execute(
+                        f"SELECT * FROM chat_history WHERE {where} AND id > ? ORDER BY id LIMIT 1000",
+                        [*params, last_id],
+                    ).fetchall()
+                    if not rows:
+                        break
+                    for row in rows:
+                        if not first:
+                            backup.write(b",")
+                        backup.write(
+                            json.dumps(
+                                row, ensure_ascii=False, separators=(",", ":")
+                            ).encode()
+                        )
+                        first = False
+                    last_id = rows[-1]["id"]
+                backup.write(b"]}")
+                db.rollback()
+            backup.seek(0)
+            return backup
+        except BaseException:
+            backup.close()
+            raise
 
     def delete(
         self,
@@ -235,7 +314,21 @@ class ArchiveManager:
         confirm_session_id,
         delete_mode="trash",
         confirm_permanent="",
+        confirm_count=0,
     ):
+        """Delete the entire confirmed snapshot atomically using bounded chunks.
+
+        Args:
+            principal: Authenticated owner of the preview.
+            preview_token: One-use snapshot token.
+            confirm_session_id: Session named in the confirmation dialog.
+            delete_mode: Move to trash or permanently delete.
+            confirm_permanent: Explicit confirmation text for permanent deletion.
+            confirm_count: Exact total shown and accepted in the dialog.
+
+        Returns:
+            Operation identifier, total count and recoverability.
+        """
         if delete_mode not in {"trash", "permanent"}:
             raise ValueError("删除方式无效")
         if delete_mode == "permanent" and confirm_permanent != "永久删除":
@@ -250,25 +343,84 @@ class ArchiveManager:
                 raise ManagementConflict("预览已失效，请重新预览")
             if confirm_session_id != preview["session_id"]:
                 raise ValueError("确认的会话 ID 不匹配")
+            if (
+                type(confirm_count) is not int
+                or confirm_count != preview["matched_count"]
+            ):
+                raise ValueError("请确认完整消息数量后重试")
             # Consume before acquiring a database lock: a confirmation cannot be replayed.
             del self._previews[preview_token]
         with self.connection_factory() as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
-                placeholders = ",".join("?" for _ in preview["ids"])
-                rows = db.execute(
-                    f"SELECT * FROM chat_history WHERE id IN ({placeholders}) ORDER BY id",
-                    preview["ids"],
-                ).fetchall()
-                if _fingerprint(rows) != preview["fingerprint"]:
-                    raise ManagementConflict("消息在预览后发生变化，请重新预览")
-                result = self._remove(
-                    db,
-                    rows,
+                where, params = session_scope(
                     preview["session_id"],
-                    "manual" if delete_mode == "trash" else "permanent",
-                    delete_mode == "trash",
+                    preview["message_id"],
+                    preview["before_ts"],
+                    preview["start_ts"],
+                    preview["end_ts"],
                 )
+                where += " AND id <= ?"
+                params.append(preview["max_id"])
+                snapshot = _scope_snapshot(db, where, params)
+                if (
+                    snapshot["count"] != confirm_count
+                    or snapshot["fingerprint"] != preview["fingerprint"]
+                ):
+                    raise ManagementConflict("消息范围已变化，请重新预览")
+                operation = secrets.token_urlsafe(24)
+                recoverable = delete_mode == "trash"
+                db.execute(
+                    "INSERT INTO archive_management_operations VALUES (?,?,?,?,?)",
+                    [
+                        operation,
+                        preview["session_id"],
+                        int(time.time()),
+                        "manual" if recoverable else "permanent",
+                        confirm_count,
+                    ],
+                )
+                last_id = removed = 0
+                users = set()
+                while True:
+                    rows = db.execute(
+                        f"SELECT * FROM chat_history WHERE {where} AND id > ? ORDER BY id LIMIT ?",
+                        [*params, last_id, BATCH_LIMIT],
+                    ).fetchall()
+                    if not rows:
+                        break
+                    ids = [row["id"] for row in rows]
+                    users.update(row.get("user_id") for row in rows)
+                    if recoverable:
+                        db.executemany(
+                            "INSERT INTO archive_trash VALUES (?,?,?,?)",
+                            [
+                                (
+                                    row["id"],
+                                    operation,
+                                    preview["session_id"],
+                                    json.dumps(row, ensure_ascii=False),
+                                )
+                                for row in rows
+                            ],
+                        )
+                    placeholders = ",".join("?" for _ in ids)
+                    db.execute(
+                        f"DELETE FROM chat_history WHERE id IN ({placeholders})", ids
+                    )
+                    if db.rowcount != len(ids):
+                        raise ManagementConflict("消息数量已变化，操作已回滚")
+                    removed += len(ids)
+                    last_id = ids[-1]
+                if removed != confirm_count:
+                    raise ManagementConflict("消息数量已变化，操作已回滚")
+                _refresh_session(db, preview["session_id"], user_ids=users)
+                result = {
+                    "operation_id": operation,
+                    "count": removed,
+                    "recoverable": recoverable,
+                    "attachments_preserved": True,
+                }
                 db.commit()
                 return result
             except Exception:
@@ -286,18 +438,25 @@ class ArchiveManager:
             ).fetchall()
 
     def restore(self, operation_id, session_id):
+        """Restore all chunks of one operation, rolling everything back on conflict.
+
+        Args:
+            operation_id: Recoverable deletion operation to restore.
+            session_id: Exact session owning the operation.
+
+        Returns:
+            Restored message count and success flag.
+        """
         session_scope(session_id)
         with self.connection_factory() as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
-                rows = db.execute(
-                    "SELECT row_json FROM archive_trash WHERE operation_id = ? AND session_id = ? ORDER BY original_id",
+                expected = db.execute(
+                    "SELECT COUNT(*) AS count FROM archive_trash WHERE operation_id = ? AND session_id = ?",
                     [operation_id, session_id],
-                ).fetchall()
-                if not rows:
+                ).fetchone()["count"]
+                if not expected:
                     raise ManagementConflict("找不到可恢复的记录")
-                if len(rows) > BATCH_LIMIT:
-                    raise ManagementConflict("恢复批次过大，请先备份并人工核对")
                 columns = [
                     info["name"]
                     for info in db.execute("PRAGMA table_info(chat_history)").fetchall()
@@ -305,25 +464,49 @@ class ArchiveManager:
                 quoted_columns = ",".join(
                     '"' + name.replace('"', '""') + '"' for name in columns
                 )
-                for item in rows:
-                    row = json.loads(item["row_json"])
-                    if set(row) != set(columns):
-                        raise ManagementConflict("数据库字段已变化，请先备份并人工核对")
+                last_id = restored = 0
+                users = set()
+                while True:
+                    items = db.execute(
+                        "SELECT original_id,row_json FROM archive_trash WHERE operation_id = ? AND session_id = ? AND original_id > ? ORDER BY original_id LIMIT ?",
+                        [operation_id, session_id, last_id, BATCH_LIMIT],
+                    ).fetchall()
+                    if not items:
+                        break
+                    rows = [json.loads(item["row_json"]) for item in items]
+                    for item, row in zip(items, rows):
+                        if set(row) != set(columns):
+                            raise ManagementConflict(
+                                "数据库字段已变化，请先备份并人工核对"
+                            )
+                        if (
+                            row["id"] != item["original_id"]
+                            or (row.get("session_id") or "legacy:archive") != session_id
+                        ):
+                            raise ManagementConflict("回收站消息范围不匹配，操作已回滚")
+                    ids = [row["id"] for row in rows]
+                    placeholders = ",".join("?" for _ in ids)
                     if db.execute(
-                        "SELECT id FROM chat_history WHERE id = ?", [row["id"]]
+                        f"SELECT id FROM chat_history WHERE id IN ({placeholders}) LIMIT 1",
+                        ids,
                     ).fetchone():
                         raise ManagementConflict("原消息 ID 已被占用，未覆盖现有消息")
-                    db.execute(
+                    db.executemany(
                         f"INSERT INTO chat_history ({quoted_columns}) VALUES ({','.join('?' for _ in columns)})",
-                        [row[col] for col in columns],
+                        [[row[col] for col in columns] for row in rows],
                     )
+                    users.update(row.get("user_id") for row in rows)
+                    restored += len(rows)
+                    last_id = items[-1]["original_id"]
+                if restored != expected:
+                    raise ManagementConflict("回收站消息数量已变化，操作已回滚")
                 db.execute(
                     "DELETE FROM archive_trash WHERE operation_id = ? AND session_id = ?",
                     [operation_id, session_id],
                 )
-                _refresh_session(db, session_id)
+                _refresh_session(db, session_id, user_ids=users)
                 db.commit()
-                return {"count": len(rows), "restored": True}
+                return {"count": restored, "restored": True}
             except Exception:
                 db.rollback()
                 raise

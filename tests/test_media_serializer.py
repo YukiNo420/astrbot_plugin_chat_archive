@@ -32,13 +32,32 @@ class MediaSerializerTests(unittest.TestCase):
         )
 
     def test_forward_raw_media_preserves_public_urls(self):
-        text = serialize_onebot_message([{
-            "type": "node",
-            "data": {"nickname": "synthetic", "content": [
-                {"type": "image", "data": {"file": "/container/image.jpg", "url": "https://example.com/image.jpg"}},
-                {"type": "video", "data": {"file": "/container/video.mp4", "url": "https://example.com/video.mp4"}},
-            ]},
-        }])
+        text = serialize_onebot_message(
+            [
+                {
+                    "type": "node",
+                    "data": {
+                        "nickname": "synthetic",
+                        "content": [
+                            {
+                                "type": "image",
+                                "data": {
+                                    "file": "/container/image.jpg",
+                                    "url": "https://example.com/image.jpg",
+                                },
+                            },
+                            {
+                                "type": "video",
+                                "data": {
+                                    "file": "/container/video.mp4",
+                                    "url": "https://example.com/video.mp4",
+                                },
+                            },
+                        ],
+                    },
+                }
+            ]
+        )
         self.assertIn("[CQ:image,url=https://example.com/image.jpg]", text)
         self.assertIn("[CQ:video,url=https://example.com/video.mp4]", text)
         self.assertNotIn("/container/", text)

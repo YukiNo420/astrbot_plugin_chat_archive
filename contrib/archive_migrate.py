@@ -199,7 +199,19 @@ def _logical_database(connection, deadline):
         if kind != "table":
             continue
         if sql and "CREATE VIRTUAL TABLE" in sql.upper():
-            raise MigrationError("Virtual tables need a separate migration procedure")
+            known_fts = (
+                name == "chat_history_fts"
+                and "".join(sql.lower().split())
+                == "createvirtualtablechat_history_ftsusingfts5(message,"
+                "content='chat_history',content_rowid='id',tokenize='trigram')"
+            )
+            if not known_fts:
+                raise MigrationError(
+                    "Virtual tables need a separate migration procedure"
+                )
+            # SQLite backup copies the archive's FTS5 shadow tables verbatim.
+            # Hash those and chat_history below without executing a virtual view.
+            continue
         columns = connection.execute(f"PRAGMA table_info({_quote(name)})").fetchall()
         ordering = ",".join(_quote(row[1]) for row in columns)
         digest, count = hashlib.sha256(), 0

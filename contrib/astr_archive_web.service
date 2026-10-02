@@ -13,6 +13,12 @@ WorkingDirectory=/path/to/AstrBot/data/plugins
 # Environment=ARCHIVE_HOST=127.0.0.1
 # Environment=ARCHIVE_PORT=8090
 # Environment=ARCHIVE_SQLITE_JOURNAL_MODE=WAL
+# Environment=ARCHIVE_AUTH_FAILURE_LIMIT=8
+# Environment=ARCHIVE_AUTH_LOCKOUT_SECONDS=300
+# 限制新建数据库、缓存和失败写入日志的默认文件权限
+UMask=0077
+# 基础进程加固；如需访问额外系统路径，请按实际部署调整 systemd 权限项
+NoNewPrivileges=true
 # 请将路径指向您的 AstrBot 虚拟环境 Python，或者使用系统的 python3
 ExecStart=/path/to/AstrBot/.venv/bin/python3 -m astrbot_plugin_chat_archive.web.server
 Restart=always

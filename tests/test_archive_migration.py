@@ -408,8 +408,27 @@ tool.copy_archive(sys.argv[1],sys.argv[2],confirm_stopped=True,quiet_seconds=0)
             (self.target / "data/web_cache/shared.png").stat().st_mtime_ns,
             media.stat().st_mtime_ns,
         )
+        with closing(sqlite3.connect(self.target / "data/chat_history.db")) as db:
+            self.assertEqual(
+                db.execute(
+                    "SELECT message FROM chat_history_fts WHERE chat_history_fts MATCH 'synthetic'"
+                ).fetchall(),
+                [("synthetic archive",)],
+            )
+        self.assertIn("chat_history_fts_data", manifest["database"]["tables"])
+        self.assertIn("chat_history_fts_docsize", manifest["database"]["tables"])
         self.assertEqual(self.hashes(), before)
         self.assertTrue(tool.verify_bundle(self.target)["ready"])
+
+    def test_unknown_virtual_table_is_rejected_without_touching_source(self):
+        with closing(sqlite3.connect(self.source / "chat_history.db")) as db:
+            db.execute("CREATE VIRTUAL TABLE chat_history_fts USING fts5(message)")
+            db.commit()
+        before = self.hashes()
+        with self.assertRaisesRegex(tool.MigrationError, "Virtual tables"):
+            self.copy()
+        self.assertEqual(self.hashes(), before)
+        self.assertFalse((self.target / "READY.json").exists())
 
     def test_scan_permissions_fail_closed_instead_of_omitting_a_directory(self):
         original = tool.os.scandir

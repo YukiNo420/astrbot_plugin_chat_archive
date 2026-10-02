@@ -6,12 +6,133 @@ import time
 from typing import Any
 
 try:
-    from .serializer import serialize_message_chain, serialize_onebot_message
+    from .serializer import (
+        escape_cq_param,
+        sanitize_cq_media_codes,
+        serialize_message_chain,
+        serialize_onebot_message,
+        unescape_cq_param,
+    )
 except ImportError:
-    from serializer import serialize_message_chain, serialize_onebot_message
+    from serializer import (
+        escape_cq_param,
+        sanitize_cq_media_codes,
+        serialize_message_chain,
+        serialize_onebot_message,
+        unescape_cq_param,
+    )
+
+
+_CQ_CACHEABLE_MEDIA_RE = re.compile(
+    r"\[CQ:(image|video)(?:,([^\]]*))?\]",
+    re.IGNORECASE,
+)
 
 
 class ArchiveEventExtractor:
+    @staticmethod
+    def _cq_param_match(inner: str, key: str):
+        return re.search(
+            rf"(?:^|,){re.escape(key)}=([^,\]]*)",
+            str(inner or ""),
+            re.IGNORECASE,
+        )
+
+    @classmethod
+    def _cq_media_source(cls, inner: str) -> str:
+        for key in ("url", "file"):
+            match = cls._cq_param_match(inner, key)
+            if match:
+                return unescape_cq_param(match.group(1)).strip()
+        return ""
+
+    @staticmethod
+    def _is_remote_media_source(value: str) -> bool:
+        return bool(re.match(r"^https?://", str(value or "").strip(), re.IGNORECASE))
+
+    @staticmethod
+    def _is_transient_local_media_source(value: str) -> bool:
+        source = str(value or "").strip()
+        return bool(
+            source.lower().startswith("file://")
+            or source.startswith("/")
+            or re.match(r"^[A-Za-z]:[\\/]", source)
+        )
+
+    @classmethod
+    def _restore_platform_media_urls(
+        cls,
+        chain_message: str,
+        platform_message: str,
+    ) -> str:
+        """Restore remote OneBot URLs replaced by AstrBot's temporary paths.
+
+        AstrBot normalizes incoming images to files under ``data/temp`` before
+        plugin handlers run. Those files are removed after the event finishes,
+        while archive media caching happens in a background queue. The original
+        OneBot payload still contains the durable remote URL, so pair media
+        segments by type and occurrence and replace only unusable local sources.
+        This keeps richer chain serialization, dimensions and surrounding text.
+        """
+        platform_sources: dict[str, list[str]] = {}
+        for match in _CQ_CACHEABLE_MEDIA_RE.finditer(platform_message):
+            media_type = match.group(1).lower()
+            platform_sources.setdefault(media_type, []).append(
+                cls._cq_media_source(match.group(2))
+            )
+
+        chain_counts: dict[str, int] = {}
+        for match in _CQ_CACHEABLE_MEDIA_RE.finditer(chain_message):
+            media_type = match.group(1).lower()
+            chain_counts[media_type] = chain_counts.get(media_type, 0) + 1
+        reconciled_types = {
+            media_type
+            for media_type, count in chain_counts.items()
+            if count == len(platform_sources.get(media_type, []))
+        }
+
+        positions: dict[str, int] = {}
+
+        def replace(match: re.Match) -> str:
+            media_type = match.group(1).lower()
+            if media_type not in reconciled_types:
+                return match.group(0)
+            index = positions.get(media_type, 0)
+            positions[media_type] = index + 1
+            candidates = platform_sources.get(media_type, [])
+            if index >= len(candidates):
+                return match.group(0)
+
+            remote_source = candidates[index]
+            if not cls._is_remote_media_source(remote_source):
+                return match.group(0)
+
+            inner = match.group(2)
+            current_source = cls._cq_media_source(inner)
+            if (
+                not current_source
+                or cls._is_remote_media_source(current_source)
+                or current_source.startswith("/static/cache/")
+                or not cls._is_transient_local_media_source(current_source)
+            ):
+                return match.group(0)
+
+            source_match = None
+            for key in ("url", "file"):
+                source_match = cls._cq_param_match(inner, key)
+                if source_match:
+                    break
+            if source_match is None:
+                return match.group(0)
+
+            start, end = source_match.span(1)
+            restored_inner = (
+                inner[:start] + escape_cq_param(remote_source) + inner[end:]
+            )
+            return f"[CQ:{match.group(1)},{restored_inner}]"
+
+        return _CQ_CACHEABLE_MEDIA_RE.sub(replace, chain_message)
+
     @staticmethod
     def get_field(obj, key, default=None):
         """Extract fields from dict-like or attribute-based platform payloads."""
@@ -135,7 +256,14 @@ class ArchiveEventExtractor:
         except Exception:
             pass
 
-        platform_message = serialize_onebot_message(cls.get_field(platform_raw, "message", ""))
+        platform_message = serialize_onebot_message(
+            cls.get_field(platform_raw, "message", "")
+        )
+        if raw_message and platform_message:
+            raw_message = cls._restore_platform_media_urls(
+                raw_message,
+                platform_message,
+            )
         if platform_message and (
             not raw_message
             or raw_message == "[合并转发]"
@@ -167,13 +295,17 @@ class ArchiveEventExtractor:
                 extracted = cls.extract_from_dirty_str(raw_message, "raw_message")
                 raw_message = extracted if extracted else "[无法解析的消息]"
 
-        return str(raw_message or "")
+        return sanitize_cq_media_codes(str(raw_message or ""))
 
     @classmethod
     def telegram_raw_message_obj(cls, platform_raw):
         if not platform_raw:
             return None
-        return getattr(platform_raw, "message", None) or cls.get_field(platform_raw, "message", None) or platform_raw
+        return (
+            getattr(platform_raw, "message", None)
+            or cls.get_field(platform_raw, "message", None)
+            or platform_raw
+        )
 
     @classmethod
     def event_timestamp(cls, event, platform_raw) -> int:
@@ -196,7 +328,9 @@ class ArchiveEventExtractor:
     @classmethod
     def event_session_name(cls, event, platform_raw, message_type: str) -> str:
         message_obj = getattr(event, "message_obj", None)
-        platform_name = str(cls.safe_event_call(event, "get_platform_name", "") or "").lower()
+        platform_name = str(
+            cls.safe_event_call(event, "get_platform_name", "") or ""
+        ).lower()
         is_group = "group" in str(message_type).lower()
         telegram_message = cls.telegram_raw_message_obj(platform_raw)
 
@@ -209,25 +343,33 @@ class ArchiveEventExtractor:
         ]
 
         if platform_name == "telegram":
-            candidates.extend([
-                cls.nested_field(telegram_message, "chat", "title"),
-                cls.nested_field(telegram_message, "chat", "full_name"),
-                cls.nested_field(telegram_message, "sender_chat", "title"),
-            ])
+            candidates.extend(
+                [
+                    cls.nested_field(telegram_message, "chat", "title"),
+                    cls.nested_field(telegram_message, "chat", "full_name"),
+                    cls.nested_field(telegram_message, "sender_chat", "title"),
+                ]
+            )
 
         if platform_name == "discord":
-            guild_name = cls.get_field(cls.get_field(platform_raw, "guild", None), "name", "")
-            channel_name = cls.get_field(cls.get_field(platform_raw, "channel", None), "name", "")
+            guild_name = cls.get_field(
+                cls.get_field(platform_raw, "guild", None), "name", ""
+            )
+            channel_name = cls.get_field(
+                cls.get_field(platform_raw, "channel", None), "name", ""
+            )
             if guild_name and channel_name:
                 candidates.append(f"{guild_name} / #{channel_name}")
             candidates.append(channel_name)
 
         if not is_group:
-            candidates.extend([
-                cls.safe_event_call(event, "get_sender_name", ""),
-                cls.nested_field(platform_raw, "message", "chat", "username"),
-                cls.nested_field(platform_raw, "message", "from_user", "username"),
-            ])
+            candidates.extend(
+                [
+                    cls.safe_event_call(event, "get_sender_name", ""),
+                    cls.nested_field(platform_raw, "message", "chat", "username"),
+                    cls.nested_field(platform_raw, "message", "from_user", "username"),
+                ]
+            )
 
         for candidate in candidates:
             text = str(candidate or "").strip()
@@ -253,7 +395,9 @@ class ArchiveEventExtractor:
                 return text
 
         platform_id = str(cls.safe_event_call(event, "get_platform_id", "") or "")
-        digest = hashlib.sha1(raw_message.encode("utf-8", errors="ignore")).hexdigest()[:12]
+        digest = hashlib.sha1(raw_message.encode("utf-8", errors="ignore")).hexdigest()[
+            :12
+        ]
         return f"{platform_id}:{user_id}:{timestamp}:{digest}"
 
     @classmethod
@@ -271,7 +415,9 @@ class ArchiveEventExtractor:
             raw_session_id = (
                 cls.event_group_id(event)
                 or str(cls.safe_event_call(event, "get_session_id", "") or "")
-                or str(getattr(getattr(event, "message_obj", None), "session_id", "") or "")
+                or str(
+                    getattr(getattr(event, "message_obj", None), "session_id", "") or ""
+                )
             )
             if raw_session_id and platform_id and message_type:
                 session_id = f"{platform_id}:{message_type}:{raw_session_id}"
@@ -290,7 +436,9 @@ class ArchiveEventExtractor:
 
         timestamp = cls.event_timestamp(event, platform_raw)
         session_name = cls.event_session_name(event, platform_raw, message_type)
-        msg_id = cls.event_message_id(event, platform_raw, user_id, timestamp, raw_message)
+        msg_id = cls.event_message_id(
+            event, platform_raw, user_id, timestamp, raw_message
+        )
 
         user_avatar = ""
         guild_avatar = ""
@@ -318,7 +466,9 @@ class ArchiveEventExtractor:
                 if isinstance(author_dict, dict):
                     a_hash = author_dict.get("avatar")
                     if a_hash and user_id:
-                        user_avatar = f"https://cdn.discordapp.com/avatars/{user_id}/{a_hash}.png"
+                        user_avatar = (
+                            f"https://cdn.discordapp.com/avatars/{user_id}/{a_hash}.png"
+                        )
 
             # Extract guild avatar (server's icon)
             guild = getattr(platform_raw, "guild", None)
@@ -340,12 +490,14 @@ class ArchiveEventExtractor:
                     g_id = guild_dict.get("id")
                     g_icon = guild_dict.get("icon")
                     if g_id and g_icon:
-                        guild_avatar = f"https://cdn.discordapp.com/icons/{g_id}/{g_icon}.png"
+                        guild_avatar = (
+                            f"https://cdn.discordapp.com/icons/{g_id}/{g_icon}.png"
+                        )
 
         return {
             "user_id": str(user_id or ""),
             "sender_name": str(nickname or ""),
-            "message": str(raw_message or ""),
+            "message": sanitize_cq_media_codes(str(raw_message or "")),
             "timestamp": int(timestamp),
             "session_id": str(session_id or ""),
             "message_type": str(message_type or ""),

@@ -1,0 +1,15 @@
+{
+  "name": "chat-archive-timeline",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild timeline.js dom.js --bundle --minify --format=iife --target=es2020 --legal-comments=eof --outdir=../web/static/js"
+  },
+  "dependencies": {
+    "@tanstack/virtual-core": "3.17.11",
+    "morphdom": "2.7.8"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}

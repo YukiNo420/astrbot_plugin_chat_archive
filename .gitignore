@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+frontend/node_modules/
 
 # Runtime data (database, cache and generated files)
 data/
@@ -21,5 +22,22 @@ web/static/cache/
 ._*
 Thumbs.db
 
-# Browser test dependencies and generated synthetic evidence
+# Local build and browser verification artifacts
 node_modules/
+output/
+.playwright-cli/
+.ruff_cache/
+
+# Private credentials, local archives and operational backups
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+*.pem
+*.key
+backups/
+cmd_config.json
+*_config.json

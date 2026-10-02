@@ -72,3 +72,23 @@ async def expand_forward_payload(messages, call_action, *, max_depth=8, max_call
         return value
 
     return await walk(deepcopy(messages), 0, set())
+
+
+def replace_forward_reference(text, markers, expanded):
+    """Replace an empty balanced placeholder as one unit; retain populated blocks."""
+    import re
+    end = "[合并转发结束]"
+    for marker in markers:
+        position = text.find(marker)
+        if position < 0:
+            continue
+        pattern = re.escape(marker) + r"(?:\r?\n[ \t]*)?" + re.escape(end)
+        match = re.search(pattern, text)
+        if match:
+            return text[:match.start()] + expanded + text[match.end():], True
+        # Legacy archives did not close placeholders. A populated modern block
+        # must not be duplicated by substituting only its opening marker.
+        if end not in text[position:]:
+            return text.replace(marker, expanded, 1), True
+        return text, True
+    return text, False

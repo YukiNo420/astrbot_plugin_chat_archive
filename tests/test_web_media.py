@@ -12,7 +12,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 
@@ -46,6 +46,16 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
         cls.db_path_patch.start()
         cls.pool_patch.start()
         cls.server = importlib.import_module("web.server")
+        cls.server_patches = [
+            patch.object(cls.server, "API_KEY", "synthetic-test-only"),
+            patch.object(cls.server, "cache_static_dir", cls.data / "web_cache"),
+            patch.object(cls.server, "_CACHE_STATIC_DIRS", (cls.data / "web_cache",)),
+            patch.object(
+                cls.server, "DB_PATH", str(cls.data / "nested" / "synthetic.db")
+            ),
+        ]
+        for item in cls.server_patches:
+            item.start()
         cls.media = importlib.import_module("media_cache")
         cls.db.init_db()
         cls.png = base64.b64decode(
@@ -58,6 +68,8 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
         cls.db.get_connection_pool().close_all()
         cls.pool_patch.stop()
         cls.db_path_patch.stop()
+        for item in reversed(cls.server_patches):
+            item.stop()
         cls.env.stop()
         cls.tmp.cleanup()
 
@@ -67,25 +79,20 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
         )
         requests = []
 
-        def fixture(request):
-            requests.append(str(request.url))
-            return httpx.Response(
-                200, content=self.png, headers={"content-type": "image/png"}
-            )
+        async def chunks():
+            for item in []:
+                yield item
 
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {"content-type": "image/png"}
+        response.content.read = AsyncMock(side_effect=[self.png, b""])
+        response.content.iter_chunked = Mock(return_value=chunks())
+        response.__aenter__.return_value = response
+        client = Mock()
+        client.get.side_effect = lambda url, **kwargs: requests.append(url) or response
         client_type = httpx.AsyncClient
-        with (
-            patch.object(
-                cache, "hostname_resolves_to_public_ips", AsyncMock(return_value=True)
-            ),
-            patch.object(
-                self.media.httpx,
-                "AsyncClient",
-                side_effect=lambda **kwargs: client_type(
-                    transport=httpx.MockTransport(fixture), **kwargs
-                ),
-            ),
-        ):
+        with patch.object(cache, "_get_client", AsyncMock(return_value=client)):
             text = await cache.process_and_cache_media_in_string(
                 "[合并转发]\n1. synthetic: [CQ:image,url=https://gchat.qpic.cn/synthetic?a=1&amp;b=2]\n[合并转发结束]"
             )
@@ -129,15 +136,16 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
     async def test_static_video_range_and_missing_media(self):
         cache = self.data / "web_cache"
         cache.mkdir(exist_ok=True)
-        content = b"synthetic-video-bytes-for-http-range"
-        (cache / "synthetic.mp4").write_bytes(content)
+        content = b"\x00\x00\x00\x18ftypmp42" + b"synthetic-video-bytes-for-http-range"
+        (cache / "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4").write_bytes(content)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.server.app),
             base_url="http://synthetic",
             headers={"X-API-Key": "synthetic-test-only"},
         ) as client:
             video = await client.get(
-                "/static/cache/synthetic.mp4", headers={"Range": "bytes=0-7"}
+                "/static/cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.mp4",
+                headers={"Range": "bytes=0-7"},
             )
             self.assertEqual(video.status_code, 206)
             self.assertEqual(video.content, content[:8])
@@ -235,6 +243,7 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
                 json={
                     "preview_token": preview["preview_token"],
                     "confirm_session_id": body["session_id"],
+                    "confirm_count": preview["count"],
                 },
             )
             self.assertEqual(result.status_code, 200)
@@ -290,6 +299,7 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
             payload = {
                 "preview_token": preview["preview_token"],
                 "confirm_session_id": body["session_id"],
+                "confirm_count": preview["count"],
             }
             self.assertEqual(
                 (
@@ -345,7 +355,7 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
         for _ in range(2):
             server = self.server.AdminServer(None, port=port)
             try:
-                server.run_in_thread()
+                await server.start()
                 deadline = time.monotonic() + 5
                 while (
                     not server.server.started
@@ -362,29 +372,23 @@ class WebMediaTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 200)
             finally:
                 await server.stop()
-            self.assertFalse(server.thread.is_alive())
+            self.assertTrue(server.thread is None or not server.thread.is_alive())
 
     async def test_port_conflict_and_startup_failure_are_reported(self):
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             sock.listen()
             server = self.server.AdminServer(None, port=sock.getsockname()[1])
-            with self.assertLogs(api.logger.name, level="ERROR") as captured:
-                server.run_in_thread()
-                await asyncio.to_thread(server.thread.join, 5)
+            with self.assertRaises(RuntimeError):
+                await server.start()
             self.assertFalse(server.server.started)
-            self.assertFalse(server.thread.is_alive())
-            self.assertIn("WebUI failed", " ".join(captured.output))
+            self.assertTrue(server.thread is None or not server.thread.is_alive())
         server = self.server.AdminServer(None, port=0)
-        with (
-            patch.object(
-                self.server,
-                "init_db",
-                side_effect=PermissionError("synthetic read-only directory"),
-            ),
-            self.assertLogs(api.logger.name, level="ERROR") as captured,
+        with patch.object(
+            self.server,
+            "init_db",
+            side_effect=PermissionError("synthetic read-only directory"),
         ):
-            server.run_in_thread()
-            await asyncio.to_thread(server.thread.join, 5)
+            with self.assertRaises(RuntimeError):
+                await server.start()
         self.assertFalse(server.server.started)
-        self.assertRegex(" ".join(captured.output), "failed|did not start")

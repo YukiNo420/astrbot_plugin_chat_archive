@@ -60,6 +60,8 @@ class MyPlugin(Star):
 
 高健壮性的通用聊天历史多维筛选接口。
 
+内部 Python API 的 `keyword` 继续采用原有的连续子串匹配。HTTP `/api/history` 新增可选参数 `search_mode=terms`，启用空白分词、双引号短语和 Unicode 大小写复核；省略参数或传 `search_mode=literal` 保持原有行为。网页消息搜索显式使用 `terms`，其他调用方无需修改。搜索模式不改变会话 / 用户 / 时间过滤、计数、排序和游标分页，也不执行数据库迁移。
+
 **参数列表：**
 | 参数名 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
@@ -78,14 +80,14 @@ class MyPlugin(Star):
 [
     {
         "id": 1,
-        "user_id": "123456789",
+        "user_id": "example-user",
         "sender_name": "张三",
         "message": "大家好！",
         "timestamp": 1775151796,
-        "session_id": "group:987654321",
+        "session_id": "group:example-group",
         "message_type": "group",
         "session_name": "测试群",
-        "msg_id": "123456",
+        "msg_id": "example-message",
         "is_recalled": 0
     },
     ...
@@ -102,7 +104,7 @@ class MyPlugin(Star):
 ```python
 [
     {
-        "session_id": "group:987654321",
+        "session_id": "group:example-group",
         "message_type": "group",
         "count": 1054,
         "last_time": 1775151796
@@ -128,7 +130,7 @@ class MyPlugin(Star):
 ```python
 [
     {
-        "user_id": "123456789",
+        "user_id": "example-user",
         "sender_name": "张三",
         "count": 420
     }
@@ -150,7 +152,7 @@ class MyPlugin(Star):
 **返回值 (`dict`):**
 ```python
 {
-    "user_id": "123456789",
+    "user_id": "example-user",
     "total_messages": 420,
     "first_seen": 1775000000,
     "last_seen": 1775151796,
@@ -178,7 +180,7 @@ class MyPlugin(Star):
 ```python
 # 示例：检查某个用户是否在当前群聊中发过足够多的消息，才触发大模型的人物侧写分析
 count = archive.get_message_count(
-    user_id="123456789",
+    user_id="example-user",
     session_id=event.unified_msg_origin
 )
 if count >= 50:
@@ -283,7 +285,7 @@ def register(app, get_db_connection):
 根据内置 Web 服务中间件的设计，除非您显式注册在白名单路径中（如 `/`、`/static`、`/api/auth/verify` 等公开页面），**您挂载的所有自定义接口都将自动受到主程序 API-Key 安全门禁的保护**。
 - 您在 `/api/custom/...` 下挂载的接口在被请求时，客户端必须在 HTTP 请求头中携带正确的 WebUI 登录凭证（Header 中添加 `X-API-Key` 字段）：
   ```http
-  GET /api/custom/user_active_hours?user_id=123456789 HTTP/1.1
+  GET /api/custom/user_active_hours?user_id=example-user HTTP/1.1
   Host: 127.0.0.1:8090
   X-API-Key: <您在后台配置的 api_key 密码>
   ```

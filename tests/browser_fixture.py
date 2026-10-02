@@ -33,7 +33,7 @@ assert Path(db_config.DB_PATH) == path / "fixture.db"
 db_config.init_db()
 cache = path / "web_cache"
 cache.mkdir()
-(cache / "shared.png").write_bytes(
+(cache / "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png").write_bytes(
     base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII="
     )
@@ -42,7 +42,7 @@ with db_config.get_db_connection() as db:
     for sid, text, ts, plat, name in [
         (
             "qq:group:42",
-            "UI message one [CQ:image,url=/static/cache/shared.png]",
+            "UI message one [CQ:image,url=/static/cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png]",
             100,
             "qq",
             "Synthetic QQ",
@@ -50,7 +50,7 @@ with db_config.get_db_connection() as db:
         ("qq:group:42", "UI message two", 200, "qq", "Synthetic QQ"),
         (
             "tg:group:42",
-            "UI message other [CQ:image,url=/static/cache/shared.png]",
+            "UI message other [CQ:image,url=/static/cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png]",
             100,
             "telegram",
             "Synthetic TG",
@@ -103,7 +103,7 @@ def fixture_state():
         "rows": rows,
         "trash_count": trash,
         "stats": stats,
-        "cache_bytes": (cache / "shared.png").read_bytes().hex(),
+        "cache_bytes": (cache / "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png").read_bytes().hex(),
         "retention_disabled_by_default": schema["message_retention_days"]["default"]
         == 0
         and schema["message_retention_global"]["default"] is False,

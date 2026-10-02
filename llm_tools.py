@@ -16,8 +16,30 @@ def _archive_json_result(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, default=str)
 
 
-def _archive_tool_error(message: str) -> str:
-    return _archive_json_result({"error": message})
+def _archive_tool_error(message: str, scope: dict | None = None) -> str:
+    payload = {"error": message}
+    if scope:
+        payload["scope"] = scope
+    return _archive_json_result(payload)
+
+
+def _pop_archive_scope(scoped_kwargs: dict) -> dict:
+    scope = scoped_kwargs.pop("__archive_scope", {}) or {}
+    if not isinstance(scope, dict):
+        return {}
+    return scope
+
+
+def _archive_scoped_result(scope: dict, data: Any) -> str:
+    return _archive_json_result({"scope": scope, "data": data})
+
+
+def _allow_cross_session_schema() -> dict:
+    return {
+        "type": "boolean",
+        "description": "可选，仅管理员跨会话查询时需要显式设置 true；普通当前会话查询不要设置。",
+        "default": False,
+    }
 
 
 @dataclass
@@ -39,8 +61,9 @@ class ArchiveGetHistoryTool(FunctionTool[AstrAgentContext]):
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "可选，会话 ID/群聊 ID；传入后仅查询该会话的消息。",
+                    "description": "可选，会话 ID/群聊 ID；默认当前会话。非管理员只能查询当前会话。",
                 },
+                "allow_cross_session": _allow_cross_session_schema(),
                 "keyword": {
                     "type": "string",
                     "description": "可选，消息关键词；用于模糊搜索消息正文。",
@@ -81,14 +104,16 @@ class ArchiveGetHistoryTool(FunctionTool[AstrAgentContext]):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        allowed, scoped_kwargs = self.plugin._prepare_archive_tool_query(
+        allowed, scoped_kwargs = await self.plugin._prepare_archive_tool_query(
             context, kwargs, require_session=True
         )
         if not allowed:
-            return _archive_tool_error(scoped_kwargs["error"])
-        return _archive_json_result(
-            await asyncio.to_thread(self.plugin.get_history, **scoped_kwargs)
-        )
+            return _archive_tool_error(
+                scoped_kwargs["error"], scoped_kwargs.get("scope")
+            )
+        scope = _pop_archive_scope(scoped_kwargs)
+        data = await asyncio.to_thread(self.plugin.get_history, **scoped_kwargs)
+        return _archive_scoped_result(scope, data)
 
 
 @dataclass
@@ -109,11 +134,18 @@ class ArchiveGetSessionsTool(FunctionTool[AstrAgentContext]):
     plugin: Any = None
 
     async def call(
-        self, context: ContextWrapper[AstrAgentContext], **kwargs
+        self, context: ContextWrapper[AstrAgentContext], **_kwargs
     ) -> ToolExecResult:
+        if not self.plugin._archive_tools_ready():
+            return _archive_tool_error("聊天存档仍在初始化或正在关闭，请稍后重试。")
         if not self.plugin._is_admin_tool_context(context):
             return _archive_tool_error("权限不足：只有管理员可以列出所有归档会话。")
-        return _archive_json_result(await asyncio.to_thread(self.plugin.get_sessions))
+        return _archive_json_result(
+            {
+                "scope": {"admin": True, "cross_session": True},
+                "data": await asyncio.to_thread(self.plugin.get_sessions),
+            }
+        )
 
 
 @dataclass
@@ -131,8 +163,9 @@ class ArchiveGetMemberRankTool(FunctionTool[AstrAgentContext]):
             "properties": {
                 "session_id": {
                     "type": "string",
-                    "description": "必填，会话 ID/群聊 ID。",
+                    "description": "可选，会话 ID/群聊 ID；默认当前会话。非管理员只能查询当前会话。",
                 },
+                "allow_cross_session": _allow_cross_session_schema(),
                 "limit": {
                     "type": "integer",
                     "description": "可选，返回排行人数，默认 10。",
@@ -147,7 +180,6 @@ class ArchiveGetMemberRankTool(FunctionTool[AstrAgentContext]):
                     "description": "可选，结束 Unix 时间戳（秒）。",
                 },
             },
-            "required": ["session_id"],
         }
     )
     plugin: Any = None
@@ -155,14 +187,16 @@ class ArchiveGetMemberRankTool(FunctionTool[AstrAgentContext]):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        allowed, scoped_kwargs = self.plugin._prepare_archive_tool_query(
+        allowed, scoped_kwargs = await self.plugin._prepare_archive_tool_query(
             context, kwargs, require_session=True
         )
         if not allowed:
-            return _archive_tool_error(scoped_kwargs["error"])
-        return _archive_json_result(
-            await asyncio.to_thread(self.plugin.get_member_rank, **scoped_kwargs)
-        )
+            return _archive_tool_error(
+                scoped_kwargs["error"], scoped_kwargs.get("scope")
+            )
+        scope = _pop_archive_scope(scoped_kwargs)
+        data = await asyncio.to_thread(self.plugin.get_member_rank, **scoped_kwargs)
+        return _archive_scoped_result(scope, data)
 
 
 @dataclass
@@ -184,8 +218,9 @@ class ArchiveGetUserSummaryTool(FunctionTool[AstrAgentContext]):
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "可选，会话 ID/群聊 ID；传入后只统计该会话内的数据。",
+                    "description": "可选，会话 ID/群聊 ID；默认当前会话。非管理员只能查询当前会话。",
                 },
+                "allow_cross_session": _allow_cross_session_schema(),
             },
             "required": ["user_id"],
         }
@@ -195,14 +230,16 @@ class ArchiveGetUserSummaryTool(FunctionTool[AstrAgentContext]):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        allowed, scoped_kwargs = self.plugin._prepare_archive_tool_query(
+        allowed, scoped_kwargs = await self.plugin._prepare_archive_tool_query(
             context, kwargs, require_session=True
         )
         if not allowed:
-            return _archive_tool_error(scoped_kwargs["error"])
-        return _archive_json_result(
-            await asyncio.to_thread(self.plugin.get_user_summary, **scoped_kwargs)
-        )
+            return _archive_tool_error(
+                scoped_kwargs["error"], scoped_kwargs.get("scope")
+            )
+        scope = _pop_archive_scope(scoped_kwargs)
+        data = await asyncio.to_thread(self.plugin.get_user_summary, **scoped_kwargs)
+        return _archive_scoped_result(scope, data)
 
 
 @dataclass
@@ -224,8 +261,9 @@ class ArchiveGetMessageCountTool(FunctionTool[AstrAgentContext]):
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "可选，会话 ID/群聊 ID；传入后只统计该会话消息。",
+                    "description": "可选，会话 ID/群聊 ID；默认当前会话。非管理员只能查询当前会话。",
                 },
+                "allow_cross_session": _allow_cross_session_schema(),
                 "since_ts": {
                     "type": "integer",
                     "description": "可选，起始 Unix 时间戳（秒）。",
@@ -247,14 +285,16 @@ class ArchiveGetMessageCountTool(FunctionTool[AstrAgentContext]):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        allowed, scoped_kwargs = self.plugin._prepare_archive_tool_query(
+        allowed, scoped_kwargs = await self.plugin._prepare_archive_tool_query(
             context, kwargs, require_session=True
         )
         if not allowed:
-            return _archive_tool_error(scoped_kwargs["error"])
-        return _archive_json_result(
-            await asyncio.to_thread(self.plugin.get_message_count, **scoped_kwargs)
-        )
+            return _archive_tool_error(
+                scoped_kwargs["error"], scoped_kwargs.get("scope")
+            )
+        scope = _pop_archive_scope(scoped_kwargs)
+        data = await asyncio.to_thread(self.plugin.get_message_count, **scoped_kwargs)
+        return _archive_scoped_result(scope, data)
 
 
 @dataclass
@@ -272,8 +312,9 @@ class ArchiveGetContextMessagesTool(FunctionTool[AstrAgentContext]):
             "properties": {
                 "session_id": {
                     "type": "string",
-                    "description": "必填，会话 ID/群聊 ID。",
+                    "description": "可选，会话 ID/群聊 ID；默认当前会话。非管理员只能查询当前会话。",
                 },
+                "allow_cross_session": _allow_cross_session_schema(),
                 "user_id": {
                     "type": "string",
                     "description": "可选，用户 ID；传入后只返回该用户的上下文消息。",
@@ -289,7 +330,6 @@ class ArchiveGetContextMessagesTool(FunctionTool[AstrAgentContext]):
                     "default": True,
                 },
             },
-            "required": ["session_id"],
         }
     )
     plugin: Any = None
@@ -297,14 +337,18 @@ class ArchiveGetContextMessagesTool(FunctionTool[AstrAgentContext]):
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
-        allowed, scoped_kwargs = self.plugin._prepare_archive_tool_query(
+        allowed, scoped_kwargs = await self.plugin._prepare_archive_tool_query(
             context, kwargs, require_session=True
         )
         if not allowed:
-            return _archive_tool_error(scoped_kwargs["error"])
-        return _archive_json_result(
-            await asyncio.to_thread(self.plugin.get_context_messages, **scoped_kwargs)
+            return _archive_tool_error(
+                scoped_kwargs["error"], scoped_kwargs.get("scope")
+            )
+        scope = _pop_archive_scope(scoped_kwargs)
+        data = await asyncio.to_thread(
+            self.plugin.get_context_messages, **scoped_kwargs
         )
+        return _archive_scoped_result(scope, data)
 
 
 def register_archive_tools(context: Any, plugin: Any) -> int:

@@ -20,10 +20,26 @@ def node(content, name="sender"):
 
 class ForwardTests(unittest.IsolatedAsyncioTestCase):
     async def test_nested_reference_and_file_url(self):
-        call = AsyncMock(side_effect=[
-            {"data": {"messages": [node([{"type": "file", "data": {"name": "notes.txt", "file_id": "f"}}], "inner")]}},
-            {"data": {"url": "https://example.com/notes.txt?a=1&b=2"}},
-        ])
+        call = AsyncMock(
+            side_effect=[
+                {
+                    "data": {
+                        "messages": [
+                            node(
+                                [
+                                    {
+                                        "type": "file",
+                                        "data": {"name": "notes.txt", "file_id": "f"},
+                                    }
+                                ],
+                                "inner",
+                            )
+                        ]
+                    }
+                },
+                {"data": {"url": "https://example.com/notes.txt?a=1&b=2"}},
+            ]
+        )
         raw = [node([{"type": "forward", "data": {"id": "child"}}], "outer")]
         expanded = await expand_forward_payload(raw, call)
         text = serialize_onebot_message(expanded)
@@ -45,21 +61,49 @@ class ForwardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unavailable_file_remains_named_and_local_path_is_rejected(self):
         file = {"type": "file", "data": {"name": "notes.txt", "file_id": "f"}}
-        for result in ({"data": {"url": "C:/private/notes.txt"}}, RuntimeError("unsupported")):
-            call = AsyncMock(side_effect=result if isinstance(result, Exception) else None, return_value=result)
-            text = serialize_onebot_message(await expand_forward_payload([node([file])], call))
+        for result in (
+            {"data": {"url": "C:/private/notes.txt"}},
+            RuntimeError("unsupported"),
+        ):
+            call = AsyncMock(
+                side_effect=result if isinstance(result, Exception) else None,
+                return_value=result,
+            )
+            text = serialize_onebot_message(
+                await expand_forward_payload([node([file])], call)
+            )
             self.assertIn("[文件: notes.txt]", text)
             self.assertNotIn("C:/private", text)
 
     async def test_group_file_uses_only_supplied_group(self):
         call = AsyncMock(return_value={"url": "https://example.com/f"})
-        file = {"type": "file", "data": {"name": "f", "file_id": "file", "group_id": "group"}}
+        file = {
+            "type": "file",
+            "data": {"name": "f", "file_id": "file", "group_id": "group"},
+        }
         await expand_forward_payload([node([file])], call)
-        call.assert_awaited_once_with("get_group_file_url", group_id="group", file_id="file")
+        call.assert_awaited_once_with(
+            "get_group_file_url", group_id="group", file_id="file"
+        )
 
     async def test_inline_nested_content_and_numbered_plain_text(self):
         call = AsyncMock()
-        raw = [node([node([{"type": "text", "data": {"text": "hello\n2. ordinary: text"}}], "inner")], "outer")]
+        raw = [
+            node(
+                [
+                    node(
+                        [
+                            {
+                                "type": "text",
+                                "data": {"text": "hello\n2. ordinary: text"},
+                            }
+                        ],
+                        "inner",
+                    )
+                ],
+                "outer",
+            )
+        ]
         text = serialize_onebot_message(await expand_forward_payload(raw, call))
         call.assert_not_awaited()
         self.assertIn("        2. ordinary: text", text)

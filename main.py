@@ -81,7 +81,7 @@ DATA_DIR = get_data_dir()
 STATIC_CACHE_DIR = get_static_cache_dir()
 
 
-@register("astrbot_plugin_chat_archive", "YukiNo420", "高性能聊天消息存档插件", "v1.5.1")
+@register("astrbot_plugin_chat_archive", "YukiNo420", "高性能聊天消息存档插件", "v1.5.2")
 class ChatArchivePlugin(Star):
     # Batch writer configuration
     _BATCH_SIZE = 50

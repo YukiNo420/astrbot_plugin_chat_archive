@@ -752,6 +752,22 @@ def _sqlite_master_name_exists(db, name: str, object_type: str) -> bool:
     return row is not None
 
 
+def _ensure_archive_trigger(db, name: str, definition: str) -> None:
+    """Replace changed owned triggers without invalidating other live pools."""
+    if not re.fullmatch(r"trg_chat_history_[a-z_]+", name):
+        raise ValueError("Unexpected archive trigger name")
+    existing = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        [name],
+    ).fetchone()
+    if existing and " ".join(str(existing["sql"]).rstrip(";").split()) == " ".join(
+        definition.rstrip(";").split()
+    ):
+        return
+    db.execute(f"DROP TRIGGER IF EXISTS {name};")
+    db.execute(definition)
+
+
 def ensure_fts_search(db, *, verify_external_content: bool = False) -> bool:
     """Create and maintain optional FTS5 trigram search acceleration."""
     global _FTS_READY
@@ -764,24 +780,34 @@ def ensure_fts_search(db, *, verify_external_content: bool = False) -> bool:
             "CREATE INDEX IF NOT EXISTS idx_chat_history_nul ON chat_history(id) "
             f"WHERE {_FTS_NUL_PREDICATE};"
         )
-        for trigger_name in _FTS_TRIGGERS:
-            db.execute(f"DROP TRIGGER IF EXISTS {trigger_name};")
-        db.execute(f"""CREATE TRIGGER {_FTS_TRIGGERS[0]}
+        _ensure_archive_trigger(
+            db,
+            _FTS_TRIGGERS[0],
+            f"""CREATE TRIGGER {_FTS_TRIGGERS[0]}
         AFTER INSERT ON chat_history
         BEGIN
             INSERT INTO {_FTS_TABLE}(rowid, message) VALUES (NEW.id, NEW.message);
-        END;""")
-        db.execute(f"""CREATE TRIGGER {_FTS_TRIGGERS[1]}
+        END;""",
+        )
+        _ensure_archive_trigger(
+            db,
+            _FTS_TRIGGERS[1],
+            f"""CREATE TRIGGER {_FTS_TRIGGERS[1]}
         AFTER DELETE ON chat_history
         BEGIN
             INSERT INTO {_FTS_TABLE}({_FTS_TABLE}, rowid, message) VALUES('delete', OLD.id, OLD.message);
-        END;""")
-        db.execute(f"""CREATE TRIGGER {_FTS_TRIGGERS[2]}
+        END;""",
+        )
+        _ensure_archive_trigger(
+            db,
+            _FTS_TRIGGERS[2],
+            f"""CREATE TRIGGER {_FTS_TRIGGERS[2]}
         AFTER UPDATE OF message ON chat_history
         BEGIN
             INSERT INTO {_FTS_TABLE}({_FTS_TABLE}, rowid, message) VALUES('delete', OLD.id, OLD.message);
             INSERT INTO {_FTS_TABLE}(rowid, message) VALUES (NEW.id, NEW.message);
-        END;""")
+        END;""",
+        )
 
         if not _sqlite_master_name_exists(db, _FTS_DOCSIZE_TABLE, "table"):
             raise RuntimeError("FTS5 docsize shadow table is unavailable")
@@ -889,8 +915,7 @@ def add_message_search_condition(
 
     if _FTS_READY and _sqlite_master_name_exists(db, _FTS_TABLE, "table"):
         conditions.append(
-            _fts_candidate_condition() + " "
-            "AND INSTR(LOWER(message), LOWER(?)) > 0"
+            _fts_candidate_condition() + " AND INSTR(LOWER(message), LOWER(?)) > 0"
         )
         params.extend([_fts_match_query(keyword), keyword])
         return True
@@ -1002,8 +1027,10 @@ def ensure_media_flags(db):
 
     # Keep rows inserted by old callers correct without changing their INSERT
     # column list. Plain text rows keep DEFAULT values and avoid this UPDATE.
-    db.execute("DROP TRIGGER IF EXISTS trg_chat_history_media_flags_insert;")
-    db.execute("""CREATE TRIGGER trg_chat_history_media_flags_insert
+    _ensure_archive_trigger(
+        db,
+        "trg_chat_history_media_flags_insert",
+        """CREATE TRIGGER trg_chat_history_media_flags_insert
     AFTER INSERT ON chat_history
     WHEN NEW.message LIKE '%[CQ:%'
     BEGIN
@@ -1019,7 +1046,8 @@ def ensure_media_flags(db):
                 ELSE COALESCE(NEW.msg_kind, 'text')
             END
         WHERE id = NEW.id;
-    END;""")
+    END;""",
+    )
 
 
 def ensure_session_stats(db):
@@ -1052,8 +1080,10 @@ def ensure_session_stats(db):
 
     # Recreate owned triggers so upgrades replace stale bodies left by earlier
     # plugin versions instead of silently preserving them forever.
-    db.execute("DROP TRIGGER IF EXISTS trg_chat_history_session_stats_insert;")
-    db.execute("""CREATE TRIGGER trg_chat_history_session_stats_insert
+    _ensure_archive_trigger(
+        db,
+        "trg_chat_history_session_stats_insert",
+        """CREATE TRIGGER trg_chat_history_session_stats_insert
     AFTER INSERT ON chat_history
     BEGIN
         INSERT INTO session_stats (
@@ -1137,7 +1167,8 @@ def ensure_session_stats(db):
                 WHEN excluded.guild_avatar_url IS NOT NULL AND excluded.guild_avatar_url != '' THEN excluded.guild_avatar_url
                 ELSE session_stats.guild_avatar_url
             END;
-    END;""")
+    END;""",
+    )
 
     history_row = db.execute("SELECT COUNT(*) as cnt FROM chat_history;").fetchone()
     session_row = db.execute("""
@@ -1288,8 +1319,10 @@ def ensure_user_stats(db, *, validate: bool = True):
         "ON session_user_stats(user_id, last_message_id DESC);"
     )
 
-    db.execute("DROP TRIGGER IF EXISTS trg_chat_history_user_stats_insert;")
-    db.execute("""CREATE TRIGGER trg_chat_history_user_stats_insert
+    _ensure_archive_trigger(
+        db,
+        "trg_chat_history_user_stats_insert",
+        """CREATE TRIGGER trg_chat_history_user_stats_insert
     AFTER INSERT ON chat_history
     WHEN NEW.user_id IS NOT NULL AND NEW.user_id != ''
     BEGIN
@@ -1355,10 +1388,13 @@ def ensure_user_stats(db, *, validate: bool = True):
                 WHEN session_user_stats.last_time IS NULL OR excluded.last_time > session_user_stats.last_time
                 THEN excluded.last_time ELSE session_user_stats.last_time END,
             last_message_id = MAX(session_user_stats.last_message_id, excluded.last_message_id);
-    END;""")
+    END;""",
+    )
 
-    db.execute("DROP TRIGGER IF EXISTS trg_chat_history_user_stats_recall;")
-    db.execute("""CREATE TRIGGER trg_chat_history_user_stats_recall
+    _ensure_archive_trigger(
+        db,
+        "trg_chat_history_user_stats_recall",
+        """CREATE TRIGGER trg_chat_history_user_stats_recall
     AFTER UPDATE OF is_recalled ON chat_history
     WHEN NEW.user_id IS NOT NULL AND NEW.user_id != ''
          AND COALESCE(OLD.is_recalled, 0) != COALESCE(NEW.is_recalled, 0)
@@ -1383,7 +1419,8 @@ def ensure_user_stats(db, *, validate: bool = True):
         )
         WHERE session_id = COALESCE(NULLIF(NEW.session_id, ''), 'legacy:archive')
           AND user_id = NEW.user_id;
-    END;""")
+    END;""",
+    )
 
     if not validate:
         return

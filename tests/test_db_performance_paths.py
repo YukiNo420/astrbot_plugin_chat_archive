@@ -109,7 +109,8 @@ class DatabasePerformancePathTests(unittest.TestCase):
             # Reproduce an older tokenizer even when tests use newer SQLite.
             db.execute(
                 "INSERT INTO chat_history_fts(chat_history_fts, rowid, message) "
-                "VALUES ('delete', ?, ?)", (row_id, message),
+                "VALUES ('delete', ?, ?)",
+                (row_id, message),
             )
             db.execute(
                 "INSERT INTO chat_history_fts(rowid, message) VALUES (?, ?)",
@@ -118,28 +119,67 @@ class DatabasePerformancePathTests(unittest.TestCase):
             for mode, keyword in (("literal", "三字词"), ("terms", "三字词 prefix")):
                 with self.subTest(mode=mode):
                     conditions, params = [], []
-                    self.assertTrue(db_config.add_message_search_condition(
-                        db, conditions, params, keyword, search_mode=mode,
-                    ))
+                    self.assertTrue(
+                        db_config.add_message_search_condition(
+                            db,
+                            conditions,
+                            params,
+                            keyword,
+                            search_mode=mode,
+                        )
+                    )
                     rows = db.execute(
                         "SELECT msg_id FROM chat_history WHERE "
-                        + " AND ".join(conditions), params,
+                        + " AND ".join(conditions),
+                        params,
                     ).fetchall()
                     self.assertEqual([row["msg_id"] for row in rows], ["match"])
             # Restore the synthetic index before exercising normal triggers.
-            db.execute("INSERT INTO chat_history_fts(chat_history_fts) VALUES('rebuild')")
-            db.execute("UPDATE chat_history SET message = 'ordinary' WHERE id = ?", (row_id,))
-            db.commit()
-            self.assertEqual(db_config.DatabaseManager.get_history(keyword="三字词"), [])
-            db.execute("UPDATE chat_history SET message = ? WHERE id = ?", (message, row_id))
+            db.execute(
+                "INSERT INTO chat_history_fts(chat_history_fts) VALUES('rebuild')"
+            )
+            db.execute(
+                "UPDATE chat_history SET message = 'ordinary' WHERE id = ?", (row_id,)
+            )
             db.commit()
             self.assertEqual(
-                [row["msg_id"] for row in db_config.DatabaseManager.get_history(keyword="三字词")],
+                db_config.DatabaseManager.get_history(keyword="三字词"), []
+            )
+            db.execute(
+                "UPDATE chat_history SET message = ? WHERE id = ?", (message, row_id)
+            )
+            db.commit()
+            self.assertEqual(
+                [
+                    row["msg_id"]
+                    for row in db_config.DatabaseManager.get_history(keyword="三字词")
+                ],
                 ["match"],
             )
             db.execute("DELETE FROM chat_history WHERE id = ?", (row_id,))
             db.commit()
-            self.assertEqual(db_config.DatabaseManager.get_history(keyword="三字词"), [])
+            self.assertEqual(
+                db_config.DatabaseManager.get_history(keyword="三字词"), []
+            )
+
+    def test_webui_reinitialization_preserves_plugin_first_batch_write(self):
+        self._insert(self._record("u1", "existing archive", "before"))
+        db_config._POOL.close_all()
+        db_config._POOL = None
+        db_config.init_db()
+        plugin_pool = db_config._POOL
+        db_config._POOL = None
+        try:
+            # The standalone WebUI initializes the same archive using its own
+            # connections while the plugin retains its already-open pool.
+            db_config.init_db()
+        finally:
+            if db_config._POOL is not None:
+                db_config._POOL.close_all()
+            db_config._POOL = plugin_pool
+        self._insert(self._record("u1", "after restart", "after"))
+        rows = db_config.DatabaseManager.get_history(keyword="after restart")
+        self.assertEqual([row["msg_id"] for row in rows], ["after"])
 
     def test_short_search_fallback_also_scans_after_nul(self):
         self._insert(self._record("u1", "prefix\x00图片suffix", "m1"))

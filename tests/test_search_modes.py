@@ -35,6 +35,7 @@ def archive(tmp_path, monkeypatch):
         ('"手机 充电"', "说的是手机 充电", "给手机充电"),
         ('"server error" 修复', "已经修复 SERVER ERROR", "server 待修复 error"),
         ("服务器 错误", "错误来自服务器", "只有服务器"),
+        ("服务器 错误", "prefix\x00错误来自服务器", "prefix\x00只有服务器"),
         ("café", "CAFÉ", "CAFE"),
         ("é", "CAFÉ", "CAFE"),
         ("привет", "ПРИВЕТ", "other message"),
@@ -91,6 +92,7 @@ def test_long_terms_keep_index_and_short_terms_still_filter(archive):
         params,
     ).fetchall()
     assert any("VIRTUAL TABLE INDEX" in row["detail"] for row in plan)
+    assert any("idx_chat_history_nul" in row["detail"] for row in plan)
 
 
 def test_legacy_python_api_retains_contiguous_matching(archive):

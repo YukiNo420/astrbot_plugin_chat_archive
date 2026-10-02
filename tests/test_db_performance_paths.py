@@ -96,6 +96,51 @@ class DatabasePerformancePathTests(unittest.TestCase):
         self.assertEqual(text_meta["full_length"], len("prefix\x00三字词suffix"))
         self.assertEqual(text_meta["prefix"], "prefix\x00三")
 
+    def test_truncated_fts_index_preserves_nul_search_and_updates(self):
+        message = "prefix\x00三字词suffix"
+        self._insert(
+            self._record("u1", message, "match"),
+            self._record("u1", "prefix\x00unrelated", "other"),
+        )
+        with db_config.get_db_connection() as db:
+            row_id = db.execute(
+                "SELECT id FROM chat_history WHERE msg_id = 'match'"
+            ).fetchone()["id"]
+            # Reproduce an older tokenizer even when tests use newer SQLite.
+            db.execute(
+                "INSERT INTO chat_history_fts(chat_history_fts, rowid, message) "
+                "VALUES ('delete', ?, ?)", (row_id, message),
+            )
+            db.execute(
+                "INSERT INTO chat_history_fts(rowid, message) VALUES (?, ?)",
+                (row_id, "prefix"),
+            )
+            for mode, keyword in (("literal", "三字词"), ("terms", "三字词 prefix")):
+                with self.subTest(mode=mode):
+                    conditions, params = [], []
+                    self.assertTrue(db_config.add_message_search_condition(
+                        db, conditions, params, keyword, search_mode=mode,
+                    ))
+                    rows = db.execute(
+                        "SELECT msg_id FROM chat_history WHERE "
+                        + " AND ".join(conditions), params,
+                    ).fetchall()
+                    self.assertEqual([row["msg_id"] for row in rows], ["match"])
+            # Restore the synthetic index before exercising normal triggers.
+            db.execute("INSERT INTO chat_history_fts(chat_history_fts) VALUES('rebuild')")
+            db.execute("UPDATE chat_history SET message = 'ordinary' WHERE id = ?", (row_id,))
+            db.commit()
+            self.assertEqual(db_config.DatabaseManager.get_history(keyword="三字词"), [])
+            db.execute("UPDATE chat_history SET message = ? WHERE id = ?", (message, row_id))
+            db.commit()
+            self.assertEqual(
+                [row["msg_id"] for row in db_config.DatabaseManager.get_history(keyword="三字词")],
+                ["match"],
+            )
+            db.execute("DELETE FROM chat_history WHERE id = ?", (row_id,))
+            db.commit()
+            self.assertEqual(db_config.DatabaseManager.get_history(keyword="三字词"), [])
+
     def test_short_search_fallback_also_scans_after_nul(self):
         self._insert(self._record("u1", "prefix\x00图片suffix", "m1"))
         conditions: list[str] = []

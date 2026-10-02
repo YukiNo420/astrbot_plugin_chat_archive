@@ -724,10 +724,20 @@ _FTS_TRIGGERS = (
 )
 _FTS_MIN_KEYWORD_CHARS = 3
 _FTS_READY = False
+_FTS_NUL_PREDICATE = "INSTR(message, CHAR(0)) > 0"
 
 
 def _fts_match_query(keyword: str) -> str:
     return '"' + str(keyword).replace('"', '""') + '"'
+
+
+def _fts_candidate_condition() -> str:
+    # Older SQLite trigram tokenizers stop at NUL. Include these uncommon
+    # rows through a partial index, then apply the usual exact text filters.
+    return (
+        f"id IN (SELECT rowid FROM {_FTS_TABLE} WHERE {_FTS_TABLE} MATCH ? "
+        f"UNION SELECT id FROM chat_history WHERE {_FTS_NUL_PREDICATE})"
+    )
 
 
 def _sqlite_master_name_exists(db, name: str, object_type: str) -> bool:
@@ -749,6 +759,10 @@ def ensure_fts_search(db, *, verify_external_content: bool = False) -> bool:
         db.execute(
             f"CREATE VIRTUAL TABLE IF NOT EXISTS {_FTS_TABLE} "
             "USING fts5(message, content='chat_history', content_rowid='id', tokenize='trigram');"
+        )
+        db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_history_nul ON chat_history(id) "
+            f"WHERE {_FTS_NUL_PREDICATE};"
         )
         for trigger_name in _FTS_TRIGGERS:
             db.execute(f"DROP TRIGGER IF EXISTS {trigger_name};")
@@ -849,9 +863,7 @@ def add_message_search_condition(
             and _sqlite_master_name_exists(db, _FTS_TABLE, "table")
         )
         if use_fts:
-            conditions.append(
-                f"id IN (SELECT rowid FROM {_FTS_TABLE} WHERE {_FTS_TABLE} MATCH ?)"
-            )
+            conditions.append(_fts_candidate_condition())
             params.append(
                 " AND ".join(_fts_match_query(term) for term in indexed_terms)
             )
@@ -877,7 +889,7 @@ def add_message_search_condition(
 
     if _FTS_READY and _sqlite_master_name_exists(db, _FTS_TABLE, "table"):
         conditions.append(
-            f"id IN (SELECT rowid FROM {_FTS_TABLE} WHERE {_FTS_TABLE} MATCH ?) "
+            _fts_candidate_condition() + " "
             "AND INSTR(LOWER(message), LOWER(?)) > 0"
         )
         params.extend([_fts_match_query(keyword), keyword])
